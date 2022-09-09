@@ -297,3 +297,8 @@ dkms.conf
 
 *.ini
 .idea/
+
+*.png
+*.tar
+*.pth
+*.json

@@ -1,0 +1,2 @@
+# Inside "config.gin"
+generate/dnn.layer_sizes = (1024, 512, 128)

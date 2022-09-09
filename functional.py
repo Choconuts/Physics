@@ -47,9 +47,13 @@ class LabInspector(TreeNode):
     def calculate_time_cost(self):
         if not viewer.lab_ui.pause.opened:
             self.counter += 1
-            if self.counter >= 10:
+            show = False
+            for k in self.time_cost:
+                if self.time_cost[k] > 0.1:
+                    show = True
+            if show:
                 for k in self.time_cost:
-                    self.cached_time_cost[k] = self.time_cost[k] / 10
+                    self.cached_time_cost[k] = self.time_cost[k] / self.counter
                     self.time_cost[k] = 0
                 self.counter = 0
 
@@ -117,7 +121,7 @@ def visualize_field(positions, scalars={}, vectors={}, graphs={}):
                 else:
                     arr = np.array(arr)
                 arr = arr_2d_to_3d(arr)
-                arr = {"tag": np.array(arr)}
+                arr = {tag: np.array(arr)}
 
         elif isinstance(arr, torch.Tensor):
             arr = arr.cpu().detach().numpy()
@@ -133,7 +137,9 @@ def visualize_field(positions, scalars={}, vectors={}, graphs={}):
     graphs = prepare(graphs, "Graph")
 
     field.update("", positions)
-    field.scalar("Position", np.ones_like(positions[:, 0]))
+
+    if len(scalars) == 0:
+        field.scalar("Position", np.ones_like(positions[:, 0]))
     for k, v in scalars.items():
         field.scalar(k, v)
     for k, v in vectors.items():
@@ -175,6 +181,9 @@ class Simulatable:
         self.__kwargs = kwargs
         input_config(self)
 
+    def init(self):
+        self.__init__(*self.__args, **self.__kwargs)
+
     def step(self, dt):
         raise NotImplementedError
 
@@ -182,7 +191,7 @@ class Simulatable:
 
         @init_func
         def init():
-            self.__init__(*self.__args, **self.__kwargs)
+            self.init()
 
         @step_func
         def step():
