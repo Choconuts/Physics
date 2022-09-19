@@ -52,10 +52,12 @@ def integrated_pos_enc(x_coord, min_deg, max_deg, diag=False):
 
 
 def isotropic_cov(mean, var):
+    n_dim = mean.shape[-1]
+    assert n_dim <= 3
     init_shape = list(mean.shape[:-1])
-    cov = torch.eye(3, device=mean.device) * var
-    cov = cov[None, :, :].expand(mean.view(-1, 3).shape[0], -1, -1)
-    return cov.reshape(init_shape + [3, 3])
+    cov = torch.eye(n_dim, device=mean.device) * var
+    cov = cov[None, :, :].expand(mean.view(-1, n_dim).shape[0], -1, -1)
+    return cov.reshape(init_shape + [n_dim, n_dim])
 
 
 class IPE(torch.nn.Module):
@@ -68,9 +70,10 @@ class IPE(torch.nn.Module):
         self.in_dim = in_dim
 
     def forward(self, mean, cov):
+        n_dim = mean.shape[-1]
         init_shape = list(mean.shape[:-1]) + [-1]
-        mean = mean.view(-1, 3)
-        cov = cov.view(-1, 3, 3)
+        mean = mean.view(-1, n_dim)
+        cov = cov.view(-1, n_dim, n_dim)
         if not self.diag:
             cov = torch.diagonal(cov, 0, 1, 2)
         enc = integrated_pos_enc(
@@ -293,12 +296,14 @@ class CRF(torch.nn.Module):
         return torch.log2(x / 2.5)
 
     def forward(self, x):
+        return x
         return self.f(self.g(x))
 
     def inv_g(self, x):
         return torch.exp2(x) * 2.5
 
     def inv(self, x):
+        return x
         y = self.inv_g(self.inv_f(x))
         return y
 
@@ -324,8 +329,7 @@ class Problem:
             [0.5, 0.1, 0.8],
         ]).cuda()
 
-        self.t = torch.tensor([[0.4]] * 5 + [[0.6]] * 10 + [[0.2]] * 5 + [[0.05]] * 2 +
-                               [[0.21], [0.23], [0.25], [0.27], [0.29]]).cuda() * 2 + 2.0
+        self.t = torch.tensor([[0.4]] * 5 + [[0.6]] * 10 + [[0.2]] * 5).cuda() * 2 + 2.0
         n_t = self.t.shape[0]
 
         self.z_to_id = lambda z: ((torch.sin(z * 8) * 20 + torch.cos(z * 4) * 10 + z ** 5 * 8) % 4).long()
@@ -335,7 +339,7 @@ class Problem:
             (torch.sin(z * 9) * 8 + torch.cos(z * 7) * 2) * 0.1
         ], -1) * 0.5 + 0.5) * self.ofs_ratio
         # self.z_to_i = lambda z: ((torch.sin(z * 7) * 3 + torch.cos(z * 6) * 2) + 5)[..., None] * 0.5
-        self.z_to_i = lambda z: self.t[((torch.sin(z * 6) * 21 + torch.cos(z * 5) * 12 + z ** 4 * 600) % n_t).long()]
+        self.z_to_i = lambda z: self.t[((torch.sin(z * 6) * 2100 + torch.cos(z * 5) * 1200 + z ** 4 * 6000) % n_t).long()]
         self.crf = CRF([0.3, 0.7, 0.4])
         self.crf.to("cuda")
 
@@ -475,7 +479,7 @@ class BRDFGatherModel(torch.nn.Module):
 
         self.naive = NaiveModel()
 
-        self.coef_weight_field = SDFNetwork(d_in=1)
+        self.coef_weight_field = SDFNetwork(d_in=1, embed="PE")
 
     def sample(self, ofs, res, n, rng=False):
         # find min t
@@ -494,7 +498,7 @@ class BRDFGatherModel(torch.nn.Module):
         pos = res[..., None, :] / (ts[..., None] + ofs[..., None, :])
 
         assert not pos.isnan().any()
-        return pos
+        return pos, ts
 
     def density(self, z, gt=None):
         z = z.view(-1, 3)
@@ -525,7 +529,7 @@ class BRDFGatherModel(torch.nn.Module):
             ofs = ofs + noise
 
         n_sample = 50
-        xs = self.sample(ofs, results, n_sample)
+        xs, ts = self.sample(ofs, results, n_sample)
 
         if visualize:
             vis_samples(xs[:30])
@@ -536,19 +540,22 @@ class BRDFGatherModel(torch.nn.Module):
         c = self.feat_field(xs.view(-1, 3))     # wxs, wxs.view(-1, 3)
         sigma = self.weight_field(xs)
         sigma = self.weight_act(sigma)
+        rho = self.coef_weight_field(ts[..., None])
+        rho = self.weight_act(rho)
+        rho = (1 - torch.exp(-rho))
 
         c = c.reshape(-1, n_sample, c.shape[-1])
         sigma = sigma.reshape(-1, n_sample, 1)
 
         # weight = (1 - torch.exp(-sigma))
         # weight = weight / (torch.sum(weight, -2, keepdim=True) + 1e-6)
-        alpha = (1.0 - torch.exp(-sigma))[..., 0]
+        alpha = (1.0 - torch.exp(-sigma))[..., 0] * rho[..., 0]
         T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1).to(alpha.device), 1. - alpha + 1e-10], -1), -1)
         weight = (alpha * T[:, :-1])[..., None]
 
         final_x = (xs * weight).sum(-2)
         final_c = (c * weight).sum(-2)
-        return final_x, self.naive(x)[1], final_c, weight.sum(-2)[..., 0] # self.brdf_spec(self.brdf_embed_fn(x.expand(-1, 3)))
+        return final_x, self.naive(x)[1], final_c, weight.sum(-2)[..., 0]   # self.brdf_spec(self.brdf_embed_fn(x.expand(-1, 3)))
 
 
 class SpaceDistrib(torch.nn.Module):
@@ -623,6 +630,44 @@ def vis(f):
     plt.scatter(z[..., 0], z[..., 1], c=x)
     plt.savefig(f"logs/opt/vis-{vis.i}.png")
     vis.i += 1
+    plt.close()
+
+
+def vis_img(f):
+    if not hasattr(vis, "i"):
+        vis.i = 0
+    plt.figure()
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    ind = torch.linspace(0, 1, 400)
+    ind_z = torch.linspace(0, 1, 2)
+    z = torch.stack(torch.meshgrid(ind, ind, ind_z), -1).cuda().view(-1, 3)
+    x = f(z)
+
+    z = z.view(400, 400, 2, 3)[:, :, 0].view(-1, 3)
+    x = x.view(-1, 2, x.shape[-1]).mean(1)
+
+    x = x.cpu().detach().numpy()
+    z = z.cpu().detach().numpy()
+    plt.scatter(z[..., 0], z[..., 1], c=x, s=0.01)
+    plt.savefig(f"logs/opt/vis-{vis.i}.png")
+    vis.i += 1
+    plt.close()
+
+
+def vis_1d(f):
+    if not hasattr(vis, "i"):
+        vis.i = 0
+    plt.figure()
+    plt.xlim(0, 1)
+    plt.ylim(0, 30)
+    z = torch.linspace(0, 1, 200).cuda()
+    x = f(z[..., None])
+
+    x = x.cpu().detach().numpy()
+    z = z.cpu().detach().numpy()
+    plt.scatter(z, x)
+    plt.savefig(f"logs/opt/vis-1d-{vis.i}.png")
     plt.close()
 
 
@@ -1014,11 +1059,41 @@ def moving_train():
 
         if i % 1000 == 0:
             vis(lambda x: torch.clamp(model.density(x), max=1.0))
+            vis_1d(lambda x: model.weight_act(model.coef_weight_field(x)))
             # print(list(map(torch.Tensor.item, x[0])), list(map(torch.Tensor.item, c[0])))
             print(list(map(torch.Tensor.item, x[0])))
             # print((model.field(z)[0] > 1e-3).long())
             print(list(map(torch.Tensor.item, crf.s)))
             pass
+
+
+def image_compress():
+    import cv2
+    img = cv2.imread("lego.png") / 255.0
+    img = torch.tensor(img).cuda().float().permute(2, 0, 1)[None, ...]
+
+    model = SDFNetwork(d_out=3, embed="IPE")
+    model.cuda()
+    optimizer = torch.optim.Adam([{"lr": 0.0005, "params": model.parameters()}], betas=(0.9, 0.99))
+    pbar = trange(30001)
+    for i in pbar:
+        x = torch.rand(10000, 3).cuda()
+        c = torch.grid_sampler_2d(img, x[None, None, :, :2] * 2 - 1.0, 0, 0, True).squeeze().permute(1, 0)
+
+        y = model(x, var=0.0)
+        loss = ((y - c) ** 2).mean()
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        pbar.set_postfix(Loss=loss.item())
+        if i % 1000 == 0:
+            def tmp(x):
+                y = model(x, var=0.0)
+                y = torch.clamp(y, 0, 1)
+                return y
+            vis_img(tmp)
 
 
 if __name__ == '__main__':
@@ -1027,6 +1102,6 @@ if __name__ == '__main__':
 
     # special_train()
     # tst_annealing()
-    moving_train()
-
+    # moving_train()
+    image_compress()
 

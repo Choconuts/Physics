@@ -25,6 +25,7 @@ class CRF(torch.nn.Module):
         return torch.exp2(x) * 2.5
 
     def inv(self, x):
+        return torch.pow(x, 1 / self.s[0])
         y = self.inv_g(self.inv_f(x))
         return torch.clamp(y, max=1e5)
 
@@ -56,6 +57,15 @@ def polar(img):
     pol = torch.stack([theta, phi, mask * 0.5], -1)
 
     return pol
+
+
+def polar_trans(xs):
+    xs = xs + torch.rand_like(xs) * 1e-4
+    x, y, z = xs[..., 0], xs[..., 1], xs[..., 2]
+    r = torch.norm(img, dim=-1)
+    phi = torch.arccos(z / r)
+    theta = torch.arcsin(y / r / torch.sin(phi))
+    return torch.stack([phi * 2 / torch.pi, theta * 2 / torch.pi, r])
 
 
 class UI:
