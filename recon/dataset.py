@@ -100,7 +100,7 @@ class LabData(Data):
         self.ind_light = ind_light
         self.light = shadow
         self.albedo = albedo
-        self.color = color
+        self.color = calc_color
         self.h, self.w = albedo.shape[:2]
         self.size = (self.w, self.h)
 

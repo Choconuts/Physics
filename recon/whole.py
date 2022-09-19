@@ -10,7 +10,7 @@ class CCF(torch.nn.Module):
     def __init__(self, s=2.0):
         super(CCF, self).__init__()
         self.s = torch.nn.Parameter(torch.tensor(s))
-        self.t_min = torch.nn.Parameter(torch.tensor(0.1))
+        self.t_min = torch.nn.Parameter(torch.tensor(0.01))
         self.t_max = torch.nn.Parameter(torch.tensor(1.43))
 
     def forward(self, x):
@@ -68,31 +68,22 @@ class BRDFGatherModel(torch.nn.Module):
 
         self.coef_weight_field = SDFNetwork(d_in=1, embed="PE")
 
-    def sample(self, ofs, res, n, rng=False, lgt_min=1e-4, lgt_max=5.0):
-        # find min t
+    def sample(self, ofs, res, n, rng=False, lgt_min=1e-4, lgt_max=5.0, sharpness=6.0):
         t_min = torch.max(res - ofs, dim=-1)[0]
-        if isinstance(lgt_min, torch.Tensor):
-            t_min[t_min < lgt_min] = lgt_min[t_min < lgt_min]
-        else:
-            t_min = torch.clamp(t_min, min=lgt_min)
-        if isinstance(lgt_max, torch.Tensor):
-            t_max = lgt_max[..., None]
-        else:
-            t_max = lgt_max
-
         l0 = torch.norm(res, dim=-1, keepdim=True)
         d = ofs.mean(-1, keepdim=True)
-        s = torch.sigmoid(torch.linspace(-1, 1, n, device=ofs.device))
+        s = torch.sigmoid(torch.linspace(-sharpness, sharpness, n, device=ofs.device))
         if rng:
             s = s + torch.rand_like(s) * (0.5 / n)
-        s = (l0 / (t_min[..., None] + d) - l0 / (t_max + d)) * s
-        ts = l0 / (l0 / (t_min[..., None] + d) - s) - d
+        s = (l0 / (lgt_min[..., None] + d) - l0 / (lgt_max[..., None] + d)) * s
+        ts = l0 / (l0 / (lgt_min[..., None] + d) - s) - d
 
         pos = res[..., None, :] / (ts[..., None] + ofs[..., None, :])
+        valid = ts > t_min[..., None]
 
         if pos.isnan().any():
             print("[NAN]", pos.isnan().nonzero())
-        return pos, ts
+        return pos, ts, valid
 
     def density(self, z, gt=None):
         z = z.view(-1, 3)
@@ -107,7 +98,7 @@ class BRDFGatherModel(torch.nn.Module):
         sigma = self.weight_act(sigma)
         return sigma
 
-    def forward(self, x, ofs=None, results=None, lgt_min=1e-4, lgt_max=5.0, manual_noised=True):
+    def forward(self, x, ofs=None, results=None, lgt_min=1e-4, lgt_max=5.0, manual_noised=True, sharpness=6.0):
         """
 
         :param x: unused identifiers (position)
@@ -123,10 +114,10 @@ class BRDFGatherModel(torch.nn.Module):
             ofs = ofs + noise
 
         n_sample = 50
-        xs, ts = self.sample(ofs, results, n_sample, lgt_min=lgt_min, lgt_max=lgt_max)
+        xs, ts, valid = self.sample(ofs, results, n_sample, lgt_min=lgt_min, lgt_max=lgt_max, sharpness=sharpness)
 
         c = self.feat_field(xs.view(-1, 3))
-        sigma = self.weight_field(xs)
+        sigma = self.weight_field(xs, 0.02)
         sigma = self.weight_act(sigma)
 
         c = c.reshape(-1, n_sample, c.shape[-1])
@@ -137,6 +128,8 @@ class BRDFGatherModel(torch.nn.Module):
         alpha = (1.0 - torch.exp(-sigma))[..., 0]
         T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1).to(alpha.device), 1. - alpha + 1e-10], -1), -1)
         weight = (alpha * T[:, :-1])[..., None]
+
+        weight[~valid] = 0
 
         final_x = (xs * weight).sum(-2)
         final_t = (ts[..., None] * weight).sum(-2)
@@ -181,19 +174,17 @@ def moving_train():
                                   {"lr": 0.0005, "params": albedo.parameters()},
                                   {"lr": 0.0001, "params": light.parameters()}], betas=(0.9, 0.99))
 
-    T_var = 3.0
+    T_var = 6.0
     pbar = trange(10001)
     for i in pbar:
-        T_var = max(T_var * 0.9995, 0.2)
         x, l, _, e, a, s, c = data.sample(5000)
         c = torch.clamp(c, min=1e-4)
         c = c * 1.43                                     # TODO: unknown param 1.43
 
-        t_prox = light(x).squeeze()
-        t_min = torch.ones_like(t_prox) * 0.01
-        t_max = t_min + torch.clamp(ccf.t_max, min=0.11)
+        t_min = torch.ones_like(c[..., 0]) * torch.clamp(ccf.t_min, min=0.01)
+        t_max = t_min + torch.clamp(ccf.t_max, min=0.1)
 
-        z, t, _, acc = model(x, e, c, t_min, t_max)
+        z, t, _, acc = model(x, e, c, t_min, t_max, sharpness=T_var)
 
         final_result = z * (t + e)
         loss = ((final_result - c) ** 2).mean()
@@ -224,11 +215,11 @@ def moving_train():
                 with torch.no_grad():
                     c = data.sample_image(x, data.color)
                     c = torch.clamp(c, min=1e-4)
-                    c = c * 1.43  # TODO: unknown param 1.43
+                    c = c * 1.43                # TODO: unknown param 1.43
                     e = data.sample_image(x, data.ind_light)
-                    t_prox = light(x).squeeze()
-                    t_min = torch.ones_like(t_prox) * 0.01
-                    t_max = t_min + torch.clamp(ccf.t_max, min=0.11)
+                    t_min = torch.ones_like(c[..., 0]) * 0.01
+                    t_max = t_min + torch.clamp(ccf.t_max, min=0.1)
+
                     z, t, _, acc = model(x, e, c, t_min, t_max)
                     calc = c / (z + 1e-4) - e
                     return t, z
