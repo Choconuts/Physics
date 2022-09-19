@@ -68,13 +68,15 @@ class BRDFGatherModel(torch.nn.Module):
 
         self.coef_weight_field = SDFNetwork(d_in=1, embed="PE")
 
-    def sample(self, ofs, res, n, rng=False, lgt_min=1e-4, lgt_max=5.0, sharpness=6.0):
+    # TODO: rng is important in current fixed t_range
+    def sample(self, ofs, res, n, rng=True, lgt_min=1e-4, lgt_max=5.0, sharpness=6.0):
         t_min = torch.max(res - ofs, dim=-1)[0]
         l0 = torch.norm(res, dim=-1, keepdim=True)
         d = ofs.mean(-1, keepdim=True)
         s = torch.sigmoid(torch.linspace(-sharpness, sharpness, n, device=ofs.device))
         if rng:
             s = s + torch.rand_like(s) * (0.5 / n)
+            s = torch.clamp(s, min=0.0, max=1.0)
         s = (l0 / (lgt_min[..., None] + d) - l0 / (lgt_max[..., None] + d)) * s
         ts = l0 / (l0 / (lgt_min[..., None] + d) - s) - d
 
@@ -153,30 +155,18 @@ def moving_train():
 
     optimizer = torch.optim.Adam([{"lr": 0.0005, "params": model.parameters()},
                                   {"lr": 0.0005, "params": ccf.parameters()},
-                                  {"lr": 0.0001, "params": light.parameters()}], betas=(0.9, 0.99))
-    data = LabData()
-
-    # pretrain
-    # pbar = trange(2001)
-    # for i in pbar:
-    #     x, l, _, e, a, s, c = data.sample(5000)
-    #     loss = ((light(x) - c.mean(-1, keepdim=True) * 2.0) ** 2).mean()        # TODO: unknown param 2.0
-    #     optimizer.zero_grad()
-    #     loss.backward()
-    #     optimizer.step()
-    #     if i % 10 == 0:
-    #         pbar.set_postfix(Loss=loss.item())
-    #     if i % 1000 == 0:
-    #         vis_img(light)
-
-    optimizer = torch.optim.Adam([{"lr": 0.0005, "params": model.parameters()},
-                                  {"lr": 0.0005, "params": ccf.parameters()},
                                   {"lr": 0.0005, "params": albedo.parameters()},
                                   {"lr": 0.0001, "params": light.parameters()}], betas=(0.9, 0.99))
+
+    data = LabData()
+
+    vis_img(lambda x: data.sample_image(x, data.ind_light))
 
     T_var = 6.0
     pbar = trange(10001)
     for i in pbar:
+        T_var *= 1.0001
+
         x, l, _, e, a, s, c = data.sample(5000)
         c = torch.clamp(c, min=1e-4)
         c = c * 1.43                                     # TODO: unknown param 1.43
