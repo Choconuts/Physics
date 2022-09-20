@@ -5,6 +5,30 @@ from recon.ipe import *
 from tqdm import trange, tqdm
 
 
+def step_curve(n, sharpness, delta, rng=False):
+    x = torch.linspace(0, 1, n).cuda()
+    if rng:
+        x = x + torch.rand_like(x) * (0.5 / n)
+        x = torch.clamp(x, min=0.0, max=1.0)
+    r = torch.sigmoid(((x - delta) / (1 - 2 * delta)) * 2 * sharpness - sharpness) * (1 - 2 * delta) + delta
+    p = (x / delta) ** 0.2 * delta
+    q = -((1 - x) / delta) ** 0.2 * delta + 1
+    r[x < delta] = p[x < delta]
+    r[x > 1 -  delta] = q[x > 1 -  delta]
+    return r         # (r - delta) / (1 - 2 * delta)
+
+
+def simple_curve(n, sharpness, rng=False):
+    # torch.sigmoid(torch.linspace(-sharpness, sharpness, n, device=ofs.device))
+    x = torch.linspace(0, 1, n).cuda()
+    r = torch.sigmoid(x * 2 * sharpness - sharpness).cuda()
+    if rng:
+        rr = r + torch.randn_like(r) * 0.01
+        r[rr < 1] = rr[rr < 1]
+    r = torch.sort(r)[0]
+    return r
+
+
 class CCF(torch.nn.Module):
 
     def __init__(self, s=2.0):
@@ -73,17 +97,15 @@ class BRDFGatherModel(torch.nn.Module):
         t_min = torch.max(res - ofs, dim=-1)[0]
         l0 = torch.norm(res, dim=-1, keepdim=True)
         d = ofs.mean(-1, keepdim=True)
-        s = torch.sigmoid(torch.linspace(-sharpness, sharpness, n, device=ofs.device))
-        if rng:
-            s = s + torch.rand_like(s) * (0.5 / n)
-            s = torch.clamp(s, min=0.0, max=1.0)
+        s = simple_curve(n, sharpness, rng)
+        # s = step_curve(n, sharpness, 0.02, rng)
         s = (l0 / (lgt_min[..., None] + d) - l0 / (lgt_max[..., None] + d)) * s
         ts = l0 / (l0 / (lgt_min[..., None] + d) - s) - d
 
         pos = res[..., None, :] / (ts[..., None] + ofs[..., None, :])
         valid = ts > t_min[..., None]
 
-        if pos.isnan().any():
+        if pos.isnan().any() or ts.isinf().any():
             print("[NAN]", pos.isnan().nonzero())
         return pos, ts, valid
 
@@ -188,13 +210,25 @@ def moving_train():
 
         total_loss = loss + KL * 0.1 + acc_loss + fit_loss
 
-        # grad = torch.autograd.grad(total_loss, model.parameters(), retain_graph=True)[0]
-        # if grad.isnan().any():
-        #     print("[NAN]", t_prox.isnan().nonzero())
+        grad = torch.autograd.grad(total_loss, t_min, retain_graph=True)[0]
+        if grad.isnan().any():
+            print("[NAN]", )
 
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
+
+        # if i % 500 == 0:
+        #     model = BRDFGatherModel()
+        #     model.cuda()
+        #
+        #     albedo = SDFNetwork(d_out=3, d_in=2, d_hidden=128, multires=12, embed="IPE")
+        #     albedo.cuda()
+        #
+        #     optimizer = torch.optim.Adam([{"lr": 0.0005, "params": model.parameters()},
+        #                                   {"lr": 0.0005, "params": ccf.parameters()},
+        #                                   {"lr": 0.0005, "params": albedo.parameters()},
+        #                                   {"lr": 0.0001, "params": light.parameters()}], betas=(0.9, 0.99))
 
         if i % 10 == 0:
             pbar.set_postfix(Loss=loss.item(), KL=KL.item(), acc=acc_loss.item(), tvar=T_var, t_min=ccf.t_min.item(), t_max=ccf.t_max.item())
@@ -212,8 +246,8 @@ def moving_train():
 
                     z, t, _, acc = model(x, e, c, t_min, t_max)
                     calc = c / (z + 1e-4) - e
-                    return t, z
-            vis_imgs(sample_and_calc, lambda x: data.sample_image(x, data.light), lambda x: data.sample_image(x, data.albedo))
+                    return calc, z, z * (ccf.t_max + e) / 1.43
+            vis_imgs(sample_and_calc, lambda x: data.sample_image(x, data.light), data.sample_image, lambda x: data.sample_image(x, data.albedo))
 
 
 if __name__ == '__main__':
