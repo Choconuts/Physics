@@ -99,23 +99,23 @@ class UI:
                 self.operation[op]()
 
 
-crf = CRF()
-ui = UI()
-ui.positive_float_value('q', 'a', *crf.getter_and_setter(0))
-ui.positive_float_value('w', 's', *crf.getter_and_setter(1))
-ui.positive_float_value('e', 'd', *crf.getter_and_setter(2))
-
-while ui.running:
-    tmp = crf.inv(img)
-    p = polar(tmp).detach().cpu().numpy()
-    tmp = polar(crf.inv(img))[..., :2]
-    if tmp.isnan().any():
-        print(tmp.isnan().nonzero())
-    hist = torch.histogramdd(tmp.view(-1, 2), (400, 400)).hist
-    h = hist.detach().cpu().numpy()
-    h = np.stack([h, h, h], -1)
-    cv2.imshow("hist", np.concatenate([h, p], 0))
-    ui.parse(cv2.waitKey())
+# crf = CRF()
+# ui = UI()
+# ui.positive_float_value('q', 'a', *crf.getter_and_setter(0))
+# ui.positive_float_value('w', 's', *crf.getter_and_setter(1))
+# ui.positive_float_value('e', 'd', *crf.getter_and_setter(2))
+#
+# while ui.running:
+#     tmp = crf.inv(img)
+#     p = polar(tmp).detach().cpu().numpy()
+#     tmp = polar(crf.inv(img))[..., :2]
+#     if tmp.isnan().any():
+#         print(tmp.isnan().nonzero())
+#     hist = torch.histogramdd(tmp.view(-1, 2), (400, 400)).hist
+#     h = hist.detach().cpu().numpy()
+#     h = np.stack([h, h, h], -1)
+#     cv2.imshow("hist", np.concatenate([h, p], 0))
+#     ui.parse(cv2.waitKey())
 
 
 class DiffCluster(torch.nn.Module):
@@ -188,4 +188,9 @@ def improve_train():
 
 
 if __name__ == '__main__':
-    improve_train()
+    img = cv2.imread("pine2.png")
+    img0 = cv2.imread("img_1.png")
+    img = img / 255.0
+    img0 = img0 / 255.0
+    img = img ** 0.46
+    cv2.imwrite("pne2-gamma.png", img * 255.0)

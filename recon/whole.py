@@ -20,7 +20,7 @@ def step_curve(n, sharpness, delta, rng=False):
 
 def simple_curve(n, sharpness, rng=False):
     # torch.sigmoid(torch.linspace(-sharpness, sharpness, n, device=ofs.device))
-    x = torch.linspace(0, 1, n).cuda()
+    x = torch.linspace(1, 0, n).cuda()
     r = torch.sigmoid(x * 2 * sharpness - sharpness).cuda()
     if rng:
         rr = r + torch.randn_like(r) * 0.01
@@ -36,6 +36,7 @@ class CCF(torch.nn.Module):
         self.s = torch.nn.Parameter(torch.tensor(s))
         self.t_min = torch.nn.Parameter(torch.tensor(0.01))
         self.t_max = torch.nn.Parameter(torch.tensor(1.43))
+        self.e_coef = torch.nn.Parameter(torch.tensor(1.0))
 
     def forward(self, x):
         return x * torch.clamp(self.s, min=1e-4)
@@ -109,16 +110,9 @@ class BRDFGatherModel(torch.nn.Module):
             print("[NAN]", pos.isnan().nonzero())
         return pos, ts, valid
 
-    def density(self, z, gt=None):
+    def density(self, z):
         z = z.view(-1, 3)
-        if gt is None:
-            gt = torch.ones_like(z)
-            gt[..., 0] = 0.3
-            gt[..., 1] = 0.7
-            gt[..., 2] = 0.4
-        # wxs = self.warp_field(torch.cat([z, gt], -1)) * 0.1 + z
-        # sigma = self.weight_field(torch.cat([z, gt], -1))
-        sigma = self.weight_field(z)
+        sigma = self.weight_field(z, 0.02)
         sigma = self.weight_act(sigma)
         return sigma
 
@@ -191,7 +185,7 @@ def moving_train():
 
         x, l, _, e, a, s, c = data.sample(5000)
         c = torch.clamp(c, min=1e-4)
-        c = c * 1.43                                     # TODO: unknown param 1.43
+        e = e * ccf.e_coef
 
         t_min = torch.ones_like(c[..., 0]) * torch.clamp(ccf.t_min, min=0.01)
         t_max = t_min + torch.clamp(ccf.t_max, min=0.1)
@@ -202,13 +196,14 @@ def moving_train():
         loss = ((final_result - c) ** 2).mean()
 
         rand_input = torch.rand(z.shape[0] * 50, z.shape[1], device=z.device)
-        KL = model.density(rand_input, torch.rand_like(rand_input)).abs().mean()
+        rand_input = 1.0 / (1.0 + rand_input * 100)
+        KL = model.density(rand_input).abs().mean()
 
         acc_loss = (acc - 1).abs().mean()
 
         fit_loss = ((albedo(x) - z.detach()) ** 2).mean()
 
-        total_loss = loss + KL * 0.1 + acc_loss + fit_loss
+        total_loss = loss + KL + acc_loss + fit_loss
 
         grad = torch.autograd.grad(total_loss, t_min, retain_graph=True)[0]
         if grad.isnan().any():
@@ -231,7 +226,7 @@ def moving_train():
         #                                   {"lr": 0.0001, "params": light.parameters()}], betas=(0.9, 0.99))
 
         if i % 10 == 0:
-            pbar.set_postfix(Loss=loss.item(), KL=KL.item(), acc=acc_loss.item(), tvar=T_var, t_min=ccf.t_min.item(), t_max=ccf.t_max.item())
+            pbar.set_postfix(Loss=loss.item(), KL=KL.item(), acc=acc_loss.item(), tvar=T_var, t_min=ccf.t_min.item(), t_max=ccf.t_max.item(), e=ccf.e_coef.item())
 
         if i % 200 == 0:
             @batchify(10000)
@@ -239,14 +234,13 @@ def moving_train():
                 with torch.no_grad():
                     c = data.sample_image(x, data.color)
                     c = torch.clamp(c, min=1e-4)
-                    c = c * 1.43                # TODO: unknown param 1.43
                     e = data.sample_image(x, data.ind_light)
                     t_min = torch.ones_like(c[..., 0]) * 0.01
                     t_max = t_min + torch.clamp(ccf.t_max, min=0.1)
 
                     z, t, _, acc = model(x, e, c, t_min, t_max)
                     calc = c / (z + 1e-4) - e
-                    return calc, z, z * (ccf.t_max + e) / 1.43
+                    return calc, z, z * (ccf.t_max + e)
             vis_imgs(sample_and_calc, lambda x: data.sample_image(x, data.light), data.sample_image, lambda x: data.sample_image(x, data.albedo))
 
 

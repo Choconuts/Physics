@@ -100,11 +100,78 @@ class LabData(Data):
         self.ind_light = ind_light
         self.light = shadow
         self.albedo = albedo
-        self.color = calc_color
+        self.color = color
         self.h, self.w = albedo.shape[:2]
         self.size = (self.w, self.h)
 
         self.color = self.color / self.intensity
+
+    def to_tensor(self, img):
+        # 1, C, H, W
+        return torch.tensor(img).permute(2, 0, 1).float().cuda()[None]
+
+    def sample(self, n):
+        x = torch.rand(1, 1, n, 2).cuda() * 2 - 1.0
+        e = F.grid_sample(self.to_tensor(self.ind_light), x).permute(3, 0, 1, 2).reshape(-1, 3)
+        c = F.grid_sample(self.to_tensor(self.color), x).permute(3, 0, 1, 2).reshape(-1, 3)
+        a = F.grid_sample(self.to_tensor(self.albedo), x).permute(3, 0, 1, 2).reshape(-1, 3)
+        l = F.grid_sample(self.to_tensor(self.light), x).permute(3, 0, 1, 2).reshape(-1, 1)
+        i = torch.tensor(self.intensity).cuda()
+        s = torch.zeros_like(a)
+
+        return x.reshape(-1, 2), l, i, e, a, s, c
+
+    def sample_image(self, x, img=None):
+        x = x.view(1, 1, -1, 2)
+        if img is None:
+            img = self.color
+        return F.grid_sample(self.to_tensor(img), x).permute(3, 0, 1, 2).reshape(-1, img.shape[-1])
+
+
+class LabData(Data):
+
+    def __init__(self):
+        super(LabData, self).__init__()
+        albedo = cv2.imread("data/dh.png") / 255.0
+        color = cv2.imread("data/dh.png") / 255.0
+        shadow = cv2.imread("data/dh.png") / 255.0
+        shadow = shadow.mean(-1, keepdims=True)
+
+        self.intensity = 1 / 0.7
+
+        ind_light = color - shadow * self.intensity * albedo
+        ind_light[ind_light < 0] = 0
+        ind_light = np.clip(ind_light / np.clip(albedo, 1e-5, 1.0), 0.0, 0.5)
+
+        calc_color = (shadow * self.intensity + ind_light) * albedo
+
+        # cv2.imshow("tst", calc_color)
+        # cv2.waitKey()
+
+        #     k = cv2.waitKey()
+        # i = 0.7
+        #
+        # while True:
+        #     cv2.imshow("tst", (shadow * albedo - color * i))
+        #     k = cv2.waitKey()
+        #     if k == 113:
+        #         i += 0.01
+        #     elif k == 97:
+        #         i -= 0.01
+        #         i = max(i, 0.0001)
+        #     print(i)
+        # shadow * albedo - color * i
+        # ind_light[ind_light > 0.22] = 0
+        # ind_light[ind_light < 0] = 0
+
+        self.ind_light = np.zeros_like(albedo)
+        self.light = shadow
+        self.albedo = albedo
+        self.color = color
+        self.h, self.w = albedo.shape[:2]
+        self.size = (self.w, self.h)
+
+        self.color = self.color
 
     def to_tensor(self, img):
         # 1, C, H, W
