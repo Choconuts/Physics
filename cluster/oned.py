@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+from tqdm import trange
 
 
 class Gaussian(torch.nn.Module):
@@ -11,21 +12,25 @@ class Gaussian(torch.nn.Module):
         self.sigma = torch.nn.Parameter(torch.ones(shape) * init_sigma)
 
     def forward(self, x):
-        sigma = torch.clamp(self.sigma, min=0.001)
+        assert x.shape[-1] == self.mu.shape[-1]
+        sigma = 1.0 / torch.clamp(self.sigma, min=0.001)
         power = (- (x - self.mu) ** 2 / (2 * sigma ** 2)).sum(-1)
-        return (np.sqrt(2 * np.pi) * sigma).prod(-1) * torch.exp(power)
+        return 1.0 / (np.sqrt(2 * np.pi) * sigma).prod(-1) * torch.exp(power)
 
     def sample(self, n):
         x = torch.randn(n, self.mu.shape[-1]).to(self.mu.device)
-        sigma = torch.clamp(self.sigma, min=0.001)
+        sigma = 1.0 / torch.clamp(self.sigma, min=0.001)
         return x * sigma + self.mu
 
 
-def plot_fn(fn):
-    x = np.linspace(0, 10, 500)
+def plot_fn(fn, tag):
+    x = np.linspace(0, 10, 2000)
     y = fn(torch.tensor(x)[..., None].cuda())
+    plt.figure()
+    plt.xlim(0, 6)
+    plt.ylim(0, 2)
     plt.plot(x, y.cpu().detach().numpy())
-    plt.show()
+    plt.savefig(f"vis/tmp{tag}.png")
 
 
 def trans_int(probs):
@@ -41,7 +46,7 @@ def trans_int(probs):
 
 
 def weight_fn(x):
-    return torch.exp(-(x - 2.1) ** 2 * 5)
+    return torch.exp(-(x - 2.1) ** 2 * 5).detach()
 
 
 if __name__ == '__main__':
@@ -50,33 +55,34 @@ if __name__ == '__main__':
     batch_size = 128
     far = 6.0
 
-    optimizer = torch.optim.Adam(params=g.parameters(), lr=0.0005)
+    optimizer = torch.optim.Adam(params=g.parameters(), lr=0.005)
 
     plt.xlim(0, far)
-    plot_fn(weight_fn)
+    plot_fn(weight_fn, "")
 
-    for i in range(5001):
-        t = g.sample(batch_size)
+    pbar = trange(5001)
+    for i in pbar:
+        t = g.sample(batch_size + 1)
         t = torch.sort(t[..., 0])[0]
+        dist = t[1:] - t[:-1]
+        mid_t = (t[1:] + t[:-1]) / 2
 
-        t = torch.clamp(t, 0.001, far)
-        dist = torch.cat([t, t[..., -1:]], -1)
-        dist = dist[1:] - dist[:-1]
+        norm_prob = g(mid_t[..., None].detach()) * dist.detach()
 
-        norm_prob = dist / (t[..., -1] - t[..., 0] + 1e-5)
-        q = weight_fn(t)
+        q = weight_fn(mid_t)
         w = trans_int(norm_prob * q)
 
-        loss = (((w).sum(-1) - 1.0) ** 2).mean()
+        loss = ((w.sum(-1) - 1) ** 2).mean()
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+        if i % 10 == 0:
+            pbar.set_postfix({"Loss": loss.item()})
         if i % 1000 == 0:
             plt.xlim(0, far)
             # plt.plot(t.cpu().detach().numpy(), w.cpu().detach().numpy())
             # plt.show()
-            print(w.max().item(), w.sum().item(), (t[..., -1] - t[..., 0] + 1e-5).item())
-            plot_fn(g)
+            plot_fn(g, i)
 

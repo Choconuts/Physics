@@ -23,14 +23,16 @@ class DepthGaussian(torch.nn.Module):
         :param uv: [M, B, N, 2 ]
         :return: [M, B, N, 1], [M, B, N, 1]
         """
-        mu_sigma = F.grid_sample(self.mu_sigma, uv).view(2, -1)
-        mu, sigma = torch.split(mu_sigma, [1, 1], 0)
-        return mu.view(*uv.shape[:-1], -1), torch.clamp(sigma, min=0.001).view(*uv.shape[:-1], -1)
+        mu_sigma = F.grid_sample(self.mu_sigma, uv).view(uv.shape[0], 2, -1)
+        mu = mu_sigma[:, 0]
+        sigma = mu_sigma[:, 1]
+        return mu.view(*uv.shape[:-1], -1), 1.0 / torch.clamp(sigma, min=0.001).view(*uv.shape[:-1], -1)
 
     def probability(self, x, uv):
+        uv = uv.view(uv.shape[0], uv.shape[1], -1, 2)
         mu, sigma = self.forward(uv)
         power = (- (x - mu) ** 2 / (2 * sigma ** 2)).sum(-1)
-        return (np.sqrt(2 * np.pi) * sigma).prod(-1) * torch.exp(power)
+        return 1.0 / (np.sqrt(2 * np.pi) * sigma).prod(-1) * torch.exp(power)
 
     def sample(self, n, uv):
         uv = uv.view(uv.shape[0], uv.shape[1], -1, 2)
@@ -70,14 +72,14 @@ def trans_int(probs):
 
 def weight_fn(x, uv):
     d = 4.0 - torch.norm(uv, dim=-1) ** 2
-    return torch.exp(-(x - d[..., None]) ** 2 * 5)
+    return torch.exp(-(x - d[..., None]) ** 2 * 5).detach()
 
 
 if __name__ == '__main__':
     image_num = 100
     batch_size = 2048
     sample_num = 64
-    resolution = 512
+    resolution = 256
     far = 6.0
     g = DepthGaussian(image_num, resolution, resolution)
     g.cuda()
@@ -87,15 +89,15 @@ if __name__ == '__main__':
     pbar = trange(10001)
     for i in pbar:
         uv = torch.rand(image_num, batch_size, 2).cuda() * 2 - 1
-        t = g.sample(sample_num, uv)
+        t = g.sample(sample_num + 1, uv)
         t = torch.sort(t[..., 0], dim=-1)[0]
 
-        # t = torch.clamp(t, 0.001, far)
-        dist = torch.cat([t, t[..., -1:]], -1)
-        dist = dist[..., 1:] - dist[..., :-1]
+        dist = t[..., 1:] - t[..., :-1]
+        mid_t = (t[..., 1:] + t[..., :-1]) / 2
 
-        norm_prob = dist / (t[..., -1:] - t[..., :1] + 1e-5)
-        q = weight_fn(t, uv)
+        norm_prob = g.probability(mid_t[..., None].detach(), uv) * dist.detach()
+
+        q = weight_fn(mid_t, uv)
         w = trans_int(norm_prob * q)
 
         loss = ((w.sum(-1) - 1.0) ** 2).mean()
@@ -106,7 +108,7 @@ if __name__ == '__main__':
 
         if i % 10 == 0:
             pbar.set_postfix({"Loss": loss.item()})
-        if i % 1000 == 0:
+        if i % 200 == 0:
             plt.xlim(0, far)
             # plt.plot(t.cpu().detach().numpy(), w.cpu().detach().numpy())
             # plt.show()
