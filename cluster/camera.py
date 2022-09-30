@@ -300,7 +300,7 @@ class Scene:
 
 
 scene = Scene(100)
-scene.show_neus()
+scene.show_match()
 
 
 if __name__ == '__main__':

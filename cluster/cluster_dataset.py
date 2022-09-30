@@ -1,11 +1,7 @@
 import os
 
 import torch
-from math import sqrt
-import winnt
-from gmm import GaussianMixture
-from torch_kmeans import KMeans
-from torchvision.io import read_image, write_png
+from cluster.third.gmm import GaussianMixture
 import glob
 import imageio
 import numpy as np
