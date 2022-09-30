@@ -20,7 +20,12 @@ def get_camera_params(uv, pose, intrinsics):
     batch_size, num_samples, _ = uv.shape
 
     depth = torch.ones((batch_size, num_samples)).cuda()
-    x_cam = (intrinsics[:, :1, 2] * 2 - uv)[:, :, 0].view(batch_size, -1)
+    if len(uv.shape) == 2:
+        x_cam = (intrinsics[:, :1, 2] * 2 - uv)[:, :, 0].view(batch_size, -1)
+    elif len(uv.shape) == 3:
+        x_cam = (intrinsics[:, :1, 2:3] * 2 - uv)[:, :, 0].view(batch_size, -1)
+    else:
+        raise NotImplementedError
     y_cam = uv[:, :, 1].view(batch_size, -1)
     z_cam = -depth.view(batch_size, -1)
 
