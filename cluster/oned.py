@@ -9,7 +9,7 @@ class Gaussian(torch.nn.Module):
     def __init__(self, shape, init_mu=0.0, init_sigma=1.0):
         super(Gaussian, self).__init__()
         self.mu = torch.nn.Parameter(torch.ones(shape) * init_mu)
-        self.sigma = torch.nn.Parameter(torch.ones(shape) * init_sigma)
+        self.sigma = torch.nn.Parameter(torch.ones(shape) / init_sigma)
 
     def forward(self, x):
         assert x.shape[-1] == self.mu.shape[-1]

@@ -21,13 +21,12 @@ def inv_camera_params(locations, pose, intrinsics):
     ray_dirs = F.normalize(locations - cam_loc, dim=2)
 
     norm_inv = p.inverse() @ torch.cat([ray_dirs + cam_loc, torch.ones_like(ray_dirs[..., -1:])], -1).permute(0, 2, 1)
-    ppc_inv = norm_inv / -norm_inv[:, 2:3, :]
+
+    z_neg = -norm_inv[:, 2:3, :]
+    ppc_inv = norm_inv / torch.where(z_neg != 0, z_neg, 1e-5)
     ppc_inv[:, 1:3, :] *= -1
     uv_inv = intrinsics @ ppc_inv[:, :3, :]
     uv = uv_inv.permute(0, 2, 1)[..., :2]
-
-    if uv.isnan().any():
-        print("TODO")
 
     return uv, ray_dirs
 
@@ -47,8 +46,9 @@ class FocusSampler:
         view_dirs = []
 
         def sample_uv(tex, uv):
+            uv = (uv[None] / torch.tensor(self.dataset.img_res).to(uv.device)) * 2 - 1
             color = F.grid_sample(
-                tex.view(1, self.dataset.img_res[0], self.dataset.img_res[1], -1).permute(0, 3, 1, 2).cuda().float(), uv[None])
+                tex.view(1, self.dataset.img_res[0], self.dataset.img_res[1], -1).permute(0, 3, 1, 2).cuda().float(), uv)
             return color.permute(0, 2, 3, 1)[0]
 
         for i in range(self.dataset.n_cameras):
@@ -59,7 +59,12 @@ class FocusSampler:
             rgb = self.dataset.rgb_images[i]
             poses.append(pose)
             intrinsics_list.append(intrinsics)
-            object_masks.append((sample_uv(object_mask, uv) > 0.5))
+
+            # TODO: add valid mask
+            uv_valid = torch.logical_and(uv >= 0, uv < torch.tensor(self.dataset.img_res).to(uv.device)).prod(-1).bool()
+            uv_valid[uv_valid.clone()] = (sample_uv(object_mask, uv[uv_valid][None]) > 0.5).squeeze()
+            object_masks.append(uv_valid)
+
             uvs.append(uv)
             rgbs.append(sample_uv(rgb, uv))
             view_dirs.append(ray_dirs)
@@ -90,6 +95,9 @@ class FocusSampler:
             rgb: [M, N, 3]
         }
         """
+
+        if sample["uv"][sample["object_mask"]].isnan().any():
+            raise RuntimeError("uv valid is nan")
 
         return sample, ground_truth
 

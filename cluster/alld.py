@@ -14,7 +14,7 @@ class DepthGaussian(torch.nn.Module):
         self.w = W
         data = torch.ones(n_image, 2, H, W)
         data[:, 0, :, :] = init_mu
-        data[:, 1, :, :] = init_sigma
+        data[:, 1, :, :] = 1.0 / init_sigma
         self.mu_sigma = torch.nn.Parameter(data)
 
     def forward(self, uv):
@@ -51,7 +51,7 @@ def plot_fn(fn):
 
 
 def vis_image(fn, tag=""):
-    img = fn.mu_sigma[0, :1]
+    img = fn.mu_sigma[-1, 1:]
     from torchvision.io import write_png
     img = img.expand(3, -1, -1).cpu() * 40
     img = img.type(torch.uint8)
@@ -63,7 +63,7 @@ def trans_int(probs):
     alpha = probs       # torch.exp(-density_delta)
     trans = torch.cat([
         torch.ones_like(probs[..., :1]),
-        torch.cumprod(1 - probs[..., :-1], dim=-1)
+        torch.cumprod(1 - probs[..., :-1] + 1e-4, dim=-1)
     ], dim=-1)
     weights = alpha * trans
 

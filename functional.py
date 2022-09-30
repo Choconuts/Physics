@@ -96,7 +96,7 @@ def time_recorded(tag, verbose=False):
         print(f"[{tag}]", end - start)
 
 
-def visualize_field(positions, scalars={}, vectors={}, graphs={}):
+def visualize_field(positions, scalars={}, vectors={}, graphs={}, len_limit=1.0):
     """
 
     :param positions: 2D or 3D points (N x 2 or N x 3)
@@ -143,7 +143,7 @@ def visualize_field(positions, scalars={}, vectors={}, graphs={}):
     for k, v in scalars.items():
         field.scalar(k, v)
     for k, v in vectors.items():
-        field.vector(k, v)
+        field.vector(k, v, length_limit=len_limit)
     for k, v in graphs.items():
         field.graph(k, v, None)
 
@@ -165,7 +165,8 @@ def step_func(f):
 
     @viewer.coroutine
     def roll():
-        __init_func()
+        if __init_func is not None:
+            __init_func()
         yield field.ui_window()
         while True:
             f()

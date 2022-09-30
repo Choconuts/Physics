@@ -6,7 +6,7 @@
 @Date  : 2020/12/18 14:28
 @Desc  : 
 """
-
+import torch
 
 from visilab.render_api import *
 from visilab.utils import *
@@ -253,12 +253,12 @@ class VisibleField(TreeNode):
             self[key].scalar(sub_path, values)
         self._attrib_propagation()
 
-    def vector(self, path: str, vectors: np.ndarray, clipper=None):
+    def vector(self, path: str, vectors: np.ndarray, clipper=None, length_limit=0.5):
         exist, key, sub_path, ended = self._pop_path(path)
 
         if ended:
             if not exist:
-                self[key] = VectorField()
+                self[key] = VectorField(length_limit=length_limit)
                 self._attrib_propagation()
                 sf = self[key]
                 assert isinstance(sf, VectorField)
@@ -321,6 +321,8 @@ class ScalarField(VisibleField):
         if self.non_zero_only:
             non_zero_idx = np.nonzero(values)
             self._geo.as_points(self.positions[non_zero_idx], self.mapper.map_to_colors(values[non_zero_idx]))
+        elif values.shape[-1] == 3:
+            self._geo.as_points(self.positions, values)
         else:
             self._geo.as_points(self.positions, self.mapper.map_to_colors(values))
         return self
@@ -328,10 +330,10 @@ class ScalarField(VisibleField):
 
 class VectorField(VisibleField):
 
-    def __init__(self, label="Vector"):
+    def __init__(self, label="Vector", length_limit=0.5):
         super().__init__(label)
         self.mapper = ScalarMapper("Mapper")
-        self.max_length = 0.5
+        self.max_length = length_limit
         self._geo = GeoNode("geo")
 
     def inspect(self, label, *args, **kwargs):
@@ -344,10 +346,24 @@ class VectorField(VisibleField):
         return [self._geo]
 
     def set(self, vectors):
-        length = np.linalg.norm(vectors, axis=1)
-        mapped_length = np.arctan(length) / np.pi * 2 * 0.01 * self.max_length
-        self._geo.as_lines(self.positions, self.positions + mapped_length.reshape([-1, 1]) * vectors
-                           , self.mapper.map_to_colors(length))
+        """
+
+        :param vectors: [..., 3] if [..., 6], rest is color
+        :return:
+        """
+        if vectors.shape[-1] == 6:
+            color = vectors[..., 3:]
+            vectors = vectors[..., :3]
+            length = np.linalg.norm(vectors, axis=1)
+        else:
+            length = np.linalg.norm(vectors, axis=1)
+            color = self.mapper.map_to_colors(length)
+
+        if self.max_length > 0:
+            mapped_length = np.arctan(length) / np.pi * 2 * 0.01 * self.max_length
+        else:
+            mapped_length = np.ones_like(length)
+        self._geo.as_lines(self.positions, self.positions + mapped_length.reshape([-1, 1]) * vectors, color)
         return self
 
 
