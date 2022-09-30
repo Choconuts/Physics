@@ -1,16 +1,20 @@
+import imgui
 import torch
 import numpy as np
 import torch.nn.functional as F
 from utils import rend_util
-from cluster.syn_dataset import SynDataset
+from cluster.third.syn_dataset import SynDataset
 from cluster.focus_sampler import FocusSampler
 from interface import *
+from cluster.third.neus_model import ImplicitNetworkMy
 
 
 class NeRF:
 
     def __init__(self):
-        from tensorf.tensoRF import TensorVM
+        self.neus = ImplicitNetworkMy()
+        self.neus.cuda()
+
         from cluster.nerf import NeRF as NeRF0
         # self.tensorf = TensorVM(torch.tensor([[-1.5] * 3, [1.5] * 3]).cuda(), [128] * 3, 'cuda', shadingMode="MLP_Fea")
         # self.tensorf.cuda()
@@ -48,6 +52,7 @@ class NeRF:
         return color
 
     def density(self, x):
+        return -self.neus(x)[..., :1]
         return self.nerf0.density(x)
         mask_outbbox = ((self.tensorf.aabb[0] > x) | (x > self.tensorf.aabb[1])).any(dim=-1)
         density = torch.ones_like(x[..., 0])
@@ -74,17 +79,35 @@ def ln_var(x, sharpness=10):
 
 
 def posterior(all_rgb, all_mask, dirs, all_dirs, ):
-    score = match_score(all_rgb, all_mask, dirs, all_dirs)
-    _, idx = torch.sort(score, 0)
-    mask = all_mask.gather(0, idx[:12])
-    rgb = all_rgb.gather(0, idx[:12, :, None].expand(-1, -1, 3))
-    mask_sum = torch.sum(mask[..., None], dim=0) + 1e-5
-    mean_rgb = torch.sum(mask[..., None] * rgb, dim=0) / mask_sum
-    mean_var = (ln_var((rgb - mean_rgb).norm(dim=-1)) * mask).sum(0) / mask_sum[..., 0]
-    prob = torch.exp(mean_var * 2)
+    # score = match_score(all_rgb, all_mask, dirs, all_dirs)
+    # _, idx = torch.sort(score, 0)
+    # mask = all_mask.gather(0, idx[:12])
+    # rgb = all_rgb.gather(0, idx[:12, :, None].expand(-1, -1, 3))
+    # mask_sum = torch.sum(mask[..., None], dim=0) + 1e-5
+    # mean_rgb = torch.sum(mask[..., None] * rgb, dim=0) / mask_sum
+    # mean_var = (ln_var((rgb - mean_rgb).norm(dim=-1)) * mask).sum(0) / mask_sum[..., 0]
+    # prob = torch.exp(mean_var * 2)
 
-    prob[mask.prod(0) == 0] = 0
-    return prob
+    # prob[mask.prod(0) == 0] = 0
+    # return prob
+
+    return all_mask.prod(0)
+
+
+class Opt(Inputable):
+
+    def __init__(self, z_val=0.0):
+        self.x_val = z_val
+        self.y_val = z_val
+        self.z_val = z_val
+
+    def gui(self, label, *args, **kwargs):
+        self.changed, self.x_val = imgui.slider_float('x', self.x_val, -1.5, 1.5)
+        self.changed, self.y_val = imgui.slider_float('y', self.y_val, -1.5, 1.5)
+        self.changed, self.z_val = imgui.slider_float('z', self.z_val, -1.5, 1.5)
+
+
+opt = Opt()
 
 
 class Scene:
@@ -99,7 +122,7 @@ class Scene:
         x, y, z = torch.zeros(3, *pnts.shape)
         x[..., 0] = 1
         y[..., 1] = 1
-        z[..., 2] = 1
+        z[..., 2] = -1
         dir_x = torch.stack(self.data.pose_all, 0)[:, :3, :3] @ x.view(-1, 3, 1)
         dir_y = torch.stack(self.data.pose_all, 0)[:, :3, :3] @ y.view(-1, 3, 1)
         dir_z = torch.stack(self.data.pose_all, 0)[:, :3, :3] @ z.view(-1, 3, 1) * 2
@@ -136,7 +159,8 @@ class Scene:
 
     def vis_field(self, field, thr=0.1, res=100):
         with torch.no_grad():
-            s = torch.linspace(-1.5, 1.5, res).cuda()
+            s = torch.linspace(-0.5, 0.5, res).cuda()
+            sz = torch.linspace(opt.z_val, opt.z_val, 2).cuda()
             x = torch.stack(torch.meshgrid([s, s, s]), -1).view(-1, 3)
             pack = field(x)
             if isinstance(pack, tuple):
@@ -188,7 +212,7 @@ class Scene:
 
             yield self.vis_field(self.nerf.density, 0.1)
 
-    @ui
+    @ui(opt)
     def show_match(self):
         def field(x):
             sample, gt = self.focus_sampler.scatter_sample(x)
@@ -198,10 +222,35 @@ class Scene:
 
             return prob, x
 
-        self.vis_field(field, 0.6, res=50)
+        while True:
+            if opt.changed:
+                yield self.vis_field(field, opt.x_val, res=60)
+            else:
+                yield
 
-    def visualize(self):
-        pass
+    @ui(opt)
+    def show_focus(self):
+        while True:
+            if opt.changed:
+                sample, gt = self.focus_sampler.scatter_sample(torch.tensor([opt.x_val, opt.y_val, opt.z_val]).cuda().view(1, 3))
+                o = sample['pose'][:, :3, 3]
+                d = sample['view_dir'][:, 0] * 4
+                c = gt['rgb'][:, 0]
+
+                a = sample['object_mask'][..., 0]
+                o = o[a]
+                d = d[a]
+                c = c[a]
+
+                visualize_field(o.cpu().numpy(), vectors={
+                    'x': torch.cat([d, c], -1).cpu().numpy()
+                }, len_limit=-1)
+            yield
+
+    @ui
+    def show_neus(self):
+        self.vis_rays()
+        yield self.vis_field(self.nerf.density, 0.001)
 
     def uv_to_tex(self, uv):
         return torch.stack([(uv[..., 0] + 1) / 2 * self.data.img_res[0],
@@ -251,7 +300,8 @@ class Scene:
 
 
 scene = Scene(100)
-scene.show_match()
+scene.show_neus()
+
 
 if __name__ == '__main__':
     pass

@@ -20,9 +20,9 @@ def get_camera_params(uv, pose, intrinsics):
     batch_size, num_samples, _ = uv.shape
 
     depth = torch.ones((batch_size, num_samples)).cuda()
-    x_cam = uv[:, :, 0].view(batch_size, -1)
+    x_cam = (intrinsics[:, :1, 2] * 2 - uv)[:, :, 0].view(batch_size, -1)
     y_cam = uv[:, :, 1].view(batch_size, -1)
-    z_cam = depth.view(batch_size, -1)
+    z_cam = -depth.view(batch_size, -1)
 
     pixel_points_cam = lift(x_cam, y_cam, z_cam, intrinsics=intrinsics)
 

@@ -37,10 +37,11 @@ class SynDataset(torch.utils.data.Dataset):
         envmap12_image_paths = []
         for frame in meta['frames']:
             pose = np.array(frame['transform_matrix'])
-            S = np.eye(3)
-            S[1, 1] = S[2, 2] = -1
-            pose[:3, :3] = S @ pose[:3, :3] @ S
-            pose[1:3, 3] *= -1
+            # S = np.eye(3)
+            # S[1, 1] = -1
+            # S[2, 2] = -1
+            # pose[:3, :3] = S @ pose[:3, :3]
+            # pose[1:3, 3] *= -1
             poses.append(pose)
             if split == 'train':
                 image_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '_rgb.exr')))

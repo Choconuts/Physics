@@ -1,10 +1,12 @@
-from functional import step_func, visualize_field, viewer, init_func, field, LabInstruction
+from functional import step_func, visualize_field, viewer, init_func, field, LabInstruction, Inputable
+import imgui
 viewer.auto_run = False
 
 
 class UI3D(object):
-    def __init__(self, fn):
+    def __init__(self, fn, opt=None):
         self.fn = fn
+        self.opt = opt
 
     def __get__(self, instance, typ):
         def run(*args, **kwargs):
@@ -16,9 +18,15 @@ class UI3D(object):
                 yield field.ui_window()
                 if gen is not None:
                     for _ in iter(gen):
-                        yield field.displayables()
+                        if self.opt is not None:
+                            yield field.displayables(), self.opt
+                        else:
+                            yield field.displayables()
                 while True:
-                    yield field.displayables()
+                    if self.opt is not None:
+                        yield field.displayables(), self.opt
+                    else:
+                        yield field.displayables()
 
             viewer.run()
         return run
@@ -30,8 +38,12 @@ class UI3D(object):
         raise NotImplementedError
 
 
-def ui(f):
-    return UI3D(f)
+def ui(opt):
+    if isinstance(opt, Inputable):
+        def wrap(f):
+            return UI3D(f, opt)
+        return wrap
+    else:
+        return UI3D(opt)
 
-
-__all__ = ['ui', 'visualize_field']
+__all__ = ['ui', 'visualize_field', 'Inputable']

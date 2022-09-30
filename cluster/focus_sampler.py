@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 from utils import rend_util
 
@@ -103,7 +102,7 @@ class FocusSampler:
 
 
 if __name__ == '__main__':
-    from syn_dataset import SynDataset
+    from cluster.third.syn_dataset import SynDataset
 
     data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 10)
     focus_sampler = FocusSampler(data)

@@ -1,13 +1,5 @@
-import torch
-import numpy as np
-import torch.nn.functional as F
 from torch import nn
-import matplotlib.pyplot as plt
-from tqdm import trange
-from cluster.syn_dataset import *
 from cluster.focus_sampler import *
-from cluster.alld import DepthGaussian, weight_fn, trans_int
-from tensorf.tensoRF import TensorVM
 from functional import *
 
 

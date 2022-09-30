@@ -1,11 +1,7 @@
-import torch
-import numpy as np
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from tqdm import trange
-from cluster.syn_dataset import *
 from cluster.focus_sampler import *
-from cluster.alld import DepthGaussian, vis_image, weight_fn, trans_int
+from cluster.alld import DepthGaussian, vis_image, trans_int
 from cluster.posterior import posterior_prob
 
 torch.random.manual_seed(0)
