@@ -14,7 +14,7 @@ class SynDataset(torch.utils.data.Dataset):
                  instance_dir,
                  frame_skip,
                  split='train',
-                 blender=False
+                 blender=True
                  ):
         self.instance_dir = instance_dir
         print('Creating dataset from: ', self.instance_dir)
@@ -26,9 +26,6 @@ class SynDataset(torch.utils.data.Dataset):
         print('Read cam from {}'.format(json_path))
         with open(json_path, 'r') as fp:
             meta = json.load(fp)
-
-        if len(glob.glob(f"{self.instance_dir}/train/*.exr")) == 0:
-            blender = True
 
         image_paths = []
         mask_paths = []
@@ -44,8 +41,8 @@ class SynDataset(torch.utils.data.Dataset):
             # pose[1:3, 3] *= -1
             poses.append(pose)
             if split == 'train':
-                image_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '_rgb.exr')))
-                mask_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '_mask.png')))
+                image_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '')))
+                mask_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '')))
             if split == 'test':
                 ind = frame['file_path'].split('/')[1]
                 image_paths.append(os.path.join(self.instance_dir, frame['file_path'] + '_rgba.png'))

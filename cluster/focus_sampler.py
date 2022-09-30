@@ -45,7 +45,8 @@ class FocusSampler:
         view_dirs = []
 
         def sample_uv(tex, uv):
-            uv = (uv[None] / torch.tensor(self.dataset.img_res).to(uv.device)) * 2 - 1
+            sz = self.dataset.img_res[1], self.dataset.img_res[0]
+            uv = (uv[None] / torch.tensor(sz).to(uv.device)) * 2 - 1
             color = F.grid_sample(
                 tex.view(1, self.dataset.img_res[0], self.dataset.img_res[1], -1).permute(0, 3, 1, 2).cuda().float(), uv)
             return color.permute(0, 2, 3, 1)[0]
@@ -61,7 +62,8 @@ class FocusSampler:
 
             # TODO: add valid mask
             uv_valid = torch.logical_and(uv >= 0, uv < torch.tensor(self.dataset.img_res).to(uv.device)).prod(-1).bool()
-            uv_valid[uv_valid.clone()] = (sample_uv(object_mask, uv[uv_valid][None]) > 0.5).squeeze()
+            if uv_valid.any() and object_mask.numel() > 0:
+                uv_valid[uv_valid.clone()] = (sample_uv(object_mask, uv[uv_valid][None]) > 0.5).squeeze()
             object_masks.append(uv_valid)
 
             uvs.append(uv)

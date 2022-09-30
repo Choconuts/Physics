@@ -1,263 +1,150 @@
-from torch import nn
-from cluster.focus_sampler import *
-from functional import *
+import torch
+from cluster.third.neus_model import ImplicitNetworkMy
+from cluster.camera import Scene, ui, visualize_field
 
 
-""" Positional encoding embedding. Code was taken from https://github.com/bmild/nerf. """
-class Embedder:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.create_embedding_fn()
+class TVLoss(torch.nn.Module):
+    def __init__(self,TVLoss_weight=1):
+        super(TVLoss,self).__init__()
+        self.TVLoss_weight = TVLoss_weight
 
-    def create_embedding_fn(self):
-        embed_fns = []
-        d = self.kwargs['input_dims']
-        out_dim = 0
-        if self.kwargs['include_input']:
-            embed_fns.append(lambda x: x)
-            out_dim += d
+    def forward(self,x):
+        batch_size = x.size()[0]
+        h_x = x.size()[2]
+        w_x = x.size()[3]
+        count_h = self._tensor_size(x[:,:,1:,:])
+        count_w = self._tensor_size(x[:,:,:,1:])
+        h_tv = torch.pow((x[:,:,1:,:]-x[:,:,:h_x-1,:]),2).sum()
+        w_tv = torch.pow((x[:,:,:,1:]-x[:,:,:,:w_x-1]),2).sum()
+        return self.TVLoss_weight*2*(h_tv/count_h+w_tv/count_w)/batch_size
 
-        max_freq = self.kwargs['max_freq_log2']
-        N_freqs = self.kwargs['num_freqs']
-
-        if self.kwargs['log_sampling']:
-            freq_bands = 2. ** torch.linspace(0., max_freq, N_freqs)
-        else:
-            freq_bands = torch.linspace(2.**0., 2.**max_freq, N_freqs)
-
-        for freq in freq_bands:
-            for p_fn in self.kwargs['periodic_fns']:
-                embed_fns.append(lambda x, p_fn=p_fn,
-                                 freq=freq: p_fn(x * freq))
-                out_dim += d
-
-        self.embed_fns = embed_fns
-        self.out_dim = out_dim
-
-    def embed(self, inputs):
-        return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
+    def _tensor_size(self,t):
+        return t.size()[1]*t.size()[2]*t.size()[3]
 
 
-def get_embedder(multires):
-    embed_kwargs = {
-        'include_input': True,
-        'input_dims': 3,
-        'max_freq_log2': multires-1,
-        'num_freqs': multires,
-        'log_sampling': True,
-        'periodic_fns': [torch.sin, torch.cos],
-    }
+class NeRF:
 
-    embedder_obj = Embedder(**embed_kwargs)
-    def embed(x, eo=embedder_obj): return eo.embed(x)
-    return embed, embedder_obj.out_dim
+    def __init__(self):
+        self.neus = ImplicitNetworkMy()
+        self.neus.cuda()
 
+        from tensorf.tensoRF import TensorVMSplit
+        self.tensorf = TensorVMSplit(torch.tensor([[-1.5] * 3, [1.5] * 3]).cuda(), [128] * 3, 'cuda',
+                                     shadingMode="MLP_Fea",
+                                     density_n_comp=[8, 8, 8],
+                                     appearance_n_comp=[24, 24, 24])
+        self.tensorf.cuda()
+        self.tv = TVLoss()
 
-class NeRF(nn.Module):
-    def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=True, alpha_chan=1):
-        """
-        """
-        super(NeRF, self).__init__()
-        self.D = D
-        self.W = W
+        # from cluster.third.nerf import NeRF as NeRF0
+        # self.nerf0 = NeRF0()
+        # self.nerf0.cuda()
 
-        self.embed, input_ch = get_embedder(10)
-        self.view_embed, input_ch_views = get_embedder(4)
-        self.input_ch = input_ch
-        self.input_ch_views = input_ch_views
-        self.skips = skips
-        self.use_viewdirs = use_viewdirs
+        self.optimizer = torch.optim.Adam(params=self.tensorf.get_optparam_groups(), betas=(0.5, 0.99))
+        # self.optimizer = torch.optim.Adam(params=self.nerf0.parameters(), lr=5e-4)
 
-        self.pts_linears = nn.ModuleList(
-            [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in
-                                        range(D - 1)])
+    def tv_loss(self):
+        loss_tv = self.tensorf.TV_loss_density(self.tv) * 0.1
+        return loss_tv
 
-        ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
-        self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W // 2)])
+    def __call__(self, rays_o, rays_d):
+        t = torch.linspace(1.0, 3.0, 128).cuda()
 
-        ### Implementation according to the paper
-        # self.views_linears = nn.ModuleList(
-        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
+        t_vals = t[None].expand(rays_d.shape[0], -1)
+        t_mids = 0.5 * (t_vals[..., :-1] + t_vals[..., 1:])
+        t_dists = t_vals[..., 1:] - t_vals[..., :-1]
+        delta = t_dists * torch.linalg.norm(rays_d[..., None, :], dim=-1)
+        # Note that we're quietly turning density from [..., 0] to [...].
 
-        self.alpha_linear = nn.Linear(W, alpha_chan)
-        if use_viewdirs:
-            self.feature_linear = nn.Linear(W, W)
-            self.rgb_linear = nn.Linear(W // 2, 3)
-        else:
-            self.output_linear = nn.Linear(W, output_ch)
+        x = rays_d[:, None, :] * t_mids[:, :, None] + rays_o[:, None, :]
+        density, color = self.nerf0(x, rays_d)
 
-    def density(self, input_pts):
-        input_pts = self.embed(input_pts)
-        h = input_pts
-        for i, l in enumerate(self.pts_linears):
-            h = self.pts_linears[i](h)
-            h = F.relu(h)
-            if i in self.skips:
-                h = torch.cat([input_pts, h], -1)
-        alpha = self.alpha_linear(h)
-        return alpha
+        density_delta = density[..., 0] * delta
 
-    def density_and_feature(self, input_pts):
-        h = input_pts
-        for i, l in enumerate(self.pts_linears):
-            h = self.pts_linears[i](h)
-            h = F.relu(h)
-            if i in self.skips:
-                h = torch.cat([input_pts, h], -1)
+        alpha = 1 - torch.exp(-density_delta)
+        trans = torch.exp(-torch.cat([
+            torch.zeros_like(density_delta[..., :1]),
+            torch.cumsum(density_delta[..., :-1], dim=-1)
+        ], dim=-1))
+        weights = alpha * trans
+        comp_rgb = (weights[..., None] * color).sum(dim=-2)
+        acc = weights.sum(dim=-1)
+        comp_rgb = comp_rgb + (1. - acc[..., None])
 
-        alpha = self.alpha_linear(h)
-        feature = self.feature_linear(h)
-        return alpha, feature
+        return comp_rgb
+        color, depth = self.tensorf(torch.cat([rays_o, rays_d], -1), is_train=True, white_bg=True, ndc_ray=False, N_samples=128)
+        return color
 
-    def color(self, input_pts, input_views, feature):
-        assert self.use_viewdirs
-        h = torch.cat([feature, input_views], -1)
-        for i, l in enumerate(self.views_linears):
-            h = self.views_linears[i](h)
-            h = F.relu(h)
+    def density(self, x):
+        # return -self.neus(x)[..., :1]
+        # return self.nerf0.density(x)
+        x = self.tensorf.normalize_coord(x)
+        mask_outbbox = ((self.tensorf.aabb[0] > x) | (x > self.tensorf.aabb[1])).any(dim=-1)
+        density = torch.ones_like(x[..., 0])
+        sigma_feature = self.tensorf.compute_densityfeature(x[~mask_outbbox])
+        validsigma = self.tensorf.feature2density(sigma_feature)
+        density[~mask_outbbox] = validsigma
+        return density
 
-        rgb = self.rgb_linear(h)
-        return rgb
-
-    def forward(self, input_pts, input_views):
-        input_views = input_views.unsqueeze(-2).expand(input_pts.shape)
-
-        input_pts = self.embed(input_pts)
-        input_views = self.view_embed(input_views)
-        h = input_pts
-        for i, l in enumerate(self.pts_linears):
-            h = self.pts_linears[i](h)
-            h = F.relu(h)
-            if i in self.skips:
-                h = torch.cat([input_pts, h], -1)
-
-        if self.use_viewdirs:
-            alpha = self.alpha_linear(h)
-            feature = self.feature_linear(h)
-            h = torch.cat([feature, input_views], -1)
-
-            for i, l in enumerate(self.views_linears):
-                h = self.views_linears[i](h)
-                h = F.relu(h)
-
-            rgb = self.rgb_linear(h)
-            outputs = F.softplus(alpha - 10), F.sigmoid(rgb)
-        else:
-            alpha = self.alpha_linear(h)
-            sh = self.output_linear(h)
-            outputs = alpha, sh
-
-        return outputs
+    def step(self, loss):
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
 
-def uv_to_tex(uv):
-    return torch.stack([(uv[..., 0] + 1) / 2 * data.img_res[0], (uv[..., 1] + 1) / 2 * data.img_res[1]], dim=-1)
+class NeRFScene(Scene):
 
+    def __init__(self, *args, **kwargs):
+        super(NeRFScene, self).__init__(*args, **kwargs)
+        self.nerf = NeRF()
 
-def sample_gt_mask(uv):
-    masks = torch.cat(data.object_masks, 0).view(-1, *data.img_res, 1).permute(0, 3, 1, 2)
-    mask = F.grid_sample(masks.cuda().float(), uv.view(uv.shape[0], 1, -1, 2)).view(uv.shape[:-1])
-    return mask > 0.5
+    @ui
+    def show_neus(self):
+        self.vis_rays()
+        yield self.vis_field(self.nerf.density, 0.001)
 
+    @ui
+    def train(self):
+        def field(x):
+            dist = (torch.norm(x, dim=-1, keepdim=True) - 0.5) ** 2
+            a = torch.exp(-dist * 10)
+            return a
 
-def sample_gt(uv):
-    images = torch.cat(data.rgb_images, 0).view(-1, *data.img_res, 3).permute(0, 3, 1, 2)
-    rgb = F.grid_sample(images.cuda().float(), uv.view(uv.shape[0], 1, -1, 2)).view(uv.shape[0], 3, -1)
-    return rgb.permute(0, 2, 1).contiguous()
+        for i in range(10000):
+            x = torch.rand(4096, 3).cuda() * 3 - 1.5
+            loss = ((self.nerf.density(x) - field(x)) ** 2).mean() + self.nerf.tv_loss()
+            self.nerf.step(loss)
+            self.vis_field(self.nerf.density)
+            print(loss.item())
 
+            yield
 
-def cast_ray(t, uv):
-    pose = torch.stack(data.pose_all).cuda()
-    intrinsics = torch.stack(data.intrinsics_all).cuda()
-    uv_tex = uv_to_tex(uv)
-    rays_d, rays_o = rend_util.get_camera_params(uv_tex, pose, intrinsics)
-    x = rays_d[:, :, None, :] * t[:, :, :, None] + rays_o[:, None, None, :]
-    return x, rays_d
+    @ui
+    def train_nerf(self):
+        for i in range(10000):
+            rays_o, rays_d, rgb, mask = self.sample_batch(2048)
+            color = self.nerf(rays_o.view(-1, 3), rays_d.view(-1, 3))
+            rgb[~mask] = 1.0
+            loss = (color - rgb.view(-1, 3)).abs().mean()
+            self.nerf.step(loss)
 
+            print(loss.item())
 
-def cast_ray_plot(t, uv, idx=0):
-    pose = torch.stack(data.pose_all).cuda()[idx:idx+1]
-    intrinsics = torch.stack(data.intrinsics_all).cuda()[idx:idx+1]
-    uv_tex = uv_to_tex(uv.view(1, -1, 2))
-    rays_d, rays_o = rend_util.get_camera_params(uv_tex, pose, intrinsics)
-    x = rays_d[:, :, None, :] * t[:, :, :, None] + rays_o[:, None, None, :]
-    return x, rays_d
+            yield self.vis_field(self.nerf.density, 0.1)
 
+    @ui
+    def check_rays(self):
+        o, d, c, a = self.sample_batch()
+        o = o[a]
+        d = d[a] * 4
+        c = c[a]
 
-def vis_image(img, tag=""):
-    from torchvision.io import write_png
-    img = img.expand(3, -1, -1).cpu() * 256
-    img = img.type(torch.uint8)
-    write_png(img, f"vis/tmp{tag}.png")
-
-
-# torch.random.manual_seed(0)
-#
-# data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 10)
-# focus_sampler = FocusSampler(data)
-#
-# nerf = NeRF()
-# nerf.cuda()
-# tensorf = TensorVM(torch.tensor([[-1.5] * 3, [1.5] * 3]).cuda(), [128] * 3, 'cuda', shadingMode="MLP_Fea")
-# optimizer = torch.optim.Adam(params=tensorf.get_optparam_groups(), betas=(0.9, 0.999))
-#
-# batch_size = 2048
-# sample_num = 256
-# pbar = trange(10001)
-# for i in pbar:
-#     uv = torch.rand(data.n_cameras, batch_size, 2).cuda() * 2 - 1
-#     mask = sample_gt_mask(uv)
-#     rgb = sample_gt(uv)
-#
-#     t = torch.linspace(2.0, 6.0, sample_num)[None, None].cuda()
-#     # x, rays_d = cast_ray(t, uv)
-#     pose = torch.stack(data.pose_all).cuda()
-#     intrinsics = torch.stack(data.intrinsics_all).cuda()
-#     uv_tex = uv_to_tex(uv)
-#     rays_d, rays_o = rend_util.get_camera_params(uv_tex, pose, intrinsics)
-#     rays_o = rays_o.unsqueeze(1).expand(rays_d.shape)
-#     rays_d = rays_d.reshape(-1 ,3)
-#     rays_o = rays_o.reshape(-1 ,3)
-#
-#     # class Cam(Simulatable):
-#     #     def __init__(self, n_seg=10):
-#     #         super().__init__(n_seg)
-#     #
-#     #     def step(self, dt):
-#     #         visualize_field(
-#     #             rays_o.view(-1, 3)[:, :3] * 0.5,
-#     #             vectors=rays_d.view(-1, 3) * 5
-#     #         )
-#     #
-#     # Cam().run()
-#
-#     # rho, color = nerf(x, rays_d)
-#     # alpha = 1.0 - torch.exp(-rho)[..., 0]
-#     # weights = trans_int(alpha)
-#     # out = (color * weights[..., None]).sum(-2)
-#     color, depth = tensorf(torch.cat([rays_o, rays_d], -1), is_train=True, white_bg=True, ndc_ray=False, N_samples=128)
-#
-#     loss = (rgb.view(-1, 3) - color).abs().mean()
-#
-#     optimizer.zero_grad()
-#     loss.backward()
-#     optimizer.step()
-#
-#     if i % 10 == 0:
-#         pbar.set_postfix({"Loss": loss.item()})
-#     if i % 100 == 0:
-#         with torch.no_grad():
-#             s = torch.linspace(-1, 1, 100).cuda()
-#             uv = torch.stack(torch.meshgrid([s, s]), -1)
-#             uv_tex = uv_to_tex(uv)
-#             rays_d, rays_o = rend_util.get_camera_params(uv_tex.view(1, -1, 2), pose[:1], intrinsics[:1])
-#             rays_o = rays_o.unsqueeze(1).expand(rays_d.shape)
-#             rays_d = rays_d.reshape(-1, 3)
-#             rays_o = rays_o.reshape(-1, 3)
-#             color, depth = tensorf(torch.cat([rays_o, rays_d], -1), is_train=True, white_bg=True, ndc_ray=False,
-#                                    N_samples=128)
-#             vis_image(color.view(*uv.shape[:-1], -1).permute(2, 0, 1), i)
+        self.vis_field(lambda x: -self.nerf.neus(x)[..., :1], 0.001)
+        visualize_field(o.cpu().numpy(), vectors={
+            'x': torch.cat([d, c], -1).cpu().numpy()
+        }, len_limit=-1)
 
 
 if __name__ == '__main__':
-    pass
+    scene = NeRFScene(1)
+    scene.check_rays()
