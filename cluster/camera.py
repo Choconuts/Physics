@@ -74,7 +74,7 @@ class Scene:
             'z': torch.cat([dir_z[..., 0], z], -1).numpy(),
         }, len_limit=5.0)
 
-    def vis_rays(self, selector=None, res=100):
+    def vis_rays(self, selector=None, res=100, far=2.0):
         if selector is None:
             selector = lambda arr: arr[0:1]
 
@@ -88,7 +88,7 @@ class Scene:
 
         rays_d, rays_o = rend_util.get_camera_params(uv_tex, pose_selected, selector(intrinsics))
         rays_o = rays_o.unsqueeze(1).expand(rays_d.shape)
-        rays_d = rays_d.reshape(-1, 3) * 2
+        rays_d = rays_d.reshape(-1, 3) * far
         rays_o = rays_o.reshape(-1, 3)
 
         print(torch.norm(rays_o, dim=-1).mean())
@@ -103,9 +103,9 @@ class Scene:
             'x': rays_d.cpu().numpy()
         }, len_limit=-1)
 
-    def vis_field(self, field, thr=0.1, res=100):
+    def vis_field(self, field, thr=0.1, res=100, radius=1.5):
         with torch.no_grad():
-            s = torch.linspace(-1.5, 1.5, res).cuda()
+            s = torch.linspace(-radius, radius, res).cuda()
             x = torch.stack(torch.meshgrid([s, s, s]), -1).view(-1, 3)
             pack = field(x)
             if isinstance(pack, tuple):

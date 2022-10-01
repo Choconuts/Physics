@@ -96,7 +96,7 @@ def time_recorded(tag, verbose=False):
         print(f"[{tag}]", end - start)
 
 
-def visualize_field(positions, scalars={}, vectors={}, graphs={}, len_limit=1.0):
+def visualize_field(positions, scalars={}, vectors={}, graphs={}, len_limit=1.0, manual_field=None):
     """
 
     :param positions: 2D or 3D points (N x 2 or N x 3)
@@ -105,6 +105,8 @@ def visualize_field(positions, scalars={}, vectors={}, graphs={}, len_limit=1.0)
     :param graphs: Dict [ tag : pair of list of start/end indices ]
     :return:
     """
+    if manual_field is None:
+        manual_field = field
 
     def arr_2d_to_3d(arr):
         if len(arr.shape) == 2:
@@ -136,16 +138,16 @@ def visualize_field(positions, scalars={}, vectors={}, graphs={}, len_limit=1.0)
     vectors = prepare(vectors, "Vector")
     graphs = prepare(graphs, "Graph")
 
-    field.update("", positions)
+    manual_field.update("", positions)
 
     if len(scalars) == 0:
-        field.scalar("Position", np.ones_like(positions[:, 0]))
+        manual_field.scalar("Position", np.ones_like(positions[:, 0]))
     for k, v in scalars.items():
-        field.scalar(k, v)
+        manual_field.scalar(k, v)
     for k, v in vectors.items():
-        field.vector(k, v, length_limit=len_limit)
+        manual_field.vector(k, v, length_limit=len_limit)
     for k, v in graphs.items():
-        field.graph(k, v, None)
+        manual_field.graph(k, v, None)
 
 
 __init_func = None
