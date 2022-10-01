@@ -50,8 +50,7 @@ def plot_fn(fn):
     plt.show()
 
 
-def vis_image(fn, tag=""):
-    img = fn.mu_sigma[-1, 1:]
+def vis_image(img, tag=""):
     from torchvision.io import write_png
     img = img.expand(3, -1, -1).cpu() * 40
     img = img.type(torch.uint8)
@@ -114,5 +113,5 @@ if __name__ == '__main__':
             # plt.show()
             print(w.max().item(), w.sum().item())
             # plot_fn(g)
-            vis_image(g)
-
+            vis_image(g.mu_sigma[-1, 1:], "var" + f"{i}")
+            vis_image(g.mu_sigma[-1, :1], "mu" + f"{i}")

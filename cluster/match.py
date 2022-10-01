@@ -84,8 +84,22 @@ class MatchScene(Scene):
         rgb = all_rgb.gather(0, idx[:best_n, :, None].expand(-1, -1, 3))
         return rgb, mask
 
+    def likelihood(self, x, obs_dirs, obs_rgb=None, degree=2):
+        rgb, mask = self.sample_neighbor(x, obs_dirs, -1)
+        mask = mask[..., None]
+        mask_exp = mask.sum(0)[..., 0]
+
+        if obs_rgb is None:
+            obs_rgb = torch.sum(rgb * mask, dim=0) / mask.sum(0)
+        mask_prob = mask_expect_fn(mask_exp, expect=self.data.n_cameras / 2.5)
+        mean_var = (ln_var((rgb - obs_rgb).norm(dim=-1)) * mask[..., 0]).sum(0)
+        prob = torch.exp(mean_var * degree)
+        prob = prob * mask_prob
+
+        return prob
+
     @ui(opt)
-    def show_match(self):
+    def show_match_deprecated(self):
         def field(x):
             sample, gt = self.focus_sampler.scatter_sample(x)
             all_mask = sample['object_mask']
@@ -143,21 +157,10 @@ class MatchScene(Scene):
 
         while True:
             if opt.changed:
-                best_n = -1
                 rays_o, rays_d, rgb0, mask0 = self.sample_image(2)
                 x = rays_o + rays_d * opt.t_val
 
-                rgb, mask = self.sample_neighbor(x, rays_d, best_n)
-
-                mask = mask[..., None]
-                # poses = [self.data.pose_all[i] for i in idx[:best_n, 0]]
-
-                mask_exp = mask.sum(0)[..., 0]
-                mask_prob = mask_expect_fn(mask_exp)
-                mean_var = (ln_var((rgb - rgb0).norm(dim=-1)) * mask[..., 0]).sum(0)
-                # mean_var = (ln_var((rgb - rgb0).norm(dim=-1))).mean(0)
-                prob = torch.exp(mean_var * 2)
-                prob = prob * mask_prob
+                prob = self.likelihood(x, rays_d, rgb0)
 
                 visualize_field(x, scalars=prob)
                 self.vis_axis()
@@ -173,25 +176,14 @@ class MatchScene(Scene):
             return a, torch.sigmoid(rgb)
         while True:
             if opt.changed:
-                best_n = -1
                 pose_id = 2
                 rays_o, rays_d, rgb0, mask0 = self.sample_image(pose_id, res=80)
                 t = torch.linspace(0.1, 2.5, 80).cuda()[:, None]
                 x = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * t
                 rgb0 = rgb0.unsqueeze(-2).expand(x.shape).reshape(-1, 3)
 
-                rgb, mask = self.sample_neighbor(x.reshape(-1, 3), rays_d.unsqueeze(-2).expand(x.shape).reshape(-1, 3), best_n)
+                prob = self.likelihood(x.reshape(-1, 3), rays_d.unsqueeze(-2).expand(x.shape).reshape(-1, 3))
 
-                mask = mask[..., None]
-                # poses = [self.data.pose_all[i] for i in idx[:best_n, 0]]
-
-                mean_rgb = torch.sum(rgb * mask, dim=0) / mask.sum(0)
-                mask_exp = mask.sum(0)[..., 0]
-                mask_prob = mask_expect_fn(mask_exp)
-                mean_var = (ln_var((rgb - mean_rgb).norm(dim=-1)) * mask[..., 0]).sum(0)
-                # mean_var = (ln_var((rgb - rgb0).norm(dim=-1))).mean(0)
-                prob = torch.exp(mean_var * 2)
-                prob = prob * mask_prob
                 x = x.reshape(-1, 3)[prob > opt.t_val / 5]
                 self.vis_axis(self.data.pose_all[pose_id:pose_id + 1])
                 self.vis_field(field, 3, radius=1.5)
@@ -215,8 +207,7 @@ class MatchScene(Scene):
             yield
 
 
-scene = MatchScene(100)
-scene.show_heat()
-
 if __name__ == '__main__':
-    pass
+    scene = MatchScene(100)
+    scene.show_heat()
+
