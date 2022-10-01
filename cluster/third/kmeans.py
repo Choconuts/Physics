@@ -13,13 +13,13 @@ def kmeans():
 
     result = model(img)
     mask = (result.labels * 255.0 / 4).type(torch.uint8)[None].expand(3, -1, -1)
-    write_png(mask, "../label.png")
+    write_png(mask, "../data/label.png")
 
 
 def main():
 
     # generate some data points ..
-    data = read_image("../dh.jpg").permute(1, 2, 0)[..., :3]
+    data = read_image("../data/dh.jpg").permute(1, 2, 0)[..., :3]
     H, W, _ = data.shape
     data = (data / 255.0).view(-1, 3)
     n, d = data.shape
@@ -34,7 +34,7 @@ def main():
     y = model.predict(data)
 
     mask = (y * 255 / n_components).type(torch.uint8).view(1, H, W).expand(3, -1, -1)
-    write_png(mask, "../label.png")
+    write_png(mask, "../data/label.png")
 
 
 def huge_main():
@@ -52,7 +52,7 @@ def huge_main():
     y = model.predict(data)
 
     mask = (y[:800*800] * 255 / n_components).type(torch.uint8).view(1, 800, 800).expand(3, -1, -1)
-    write_png(mask, "../label.png")
+    write_png(mask, "../data/label.png")
 
 
 def cuda_main():
@@ -71,7 +71,7 @@ def cuda_main():
     y = model.predict(data)
 
     mask = (y * 255 / n_components).type(torch.uint8).view(1, 800, 800).expand(3, -1, -1)
-    write_png(mask, "../label.png")
+    write_png(mask, "../data/label.png")
 
 
 if __name__ == '__main__':

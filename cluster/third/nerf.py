@@ -1,5 +1,5 @@
 from torch import nn
-from cluster.focus_sampler import *
+from cluster.third.focus_sampler import *
 from functional import *
 
 

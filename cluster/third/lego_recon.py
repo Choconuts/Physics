@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from tqdm import trange
-from cluster.focus_sampler import *
+from cluster.third.focus_sampler import *
 from cluster.alld import DepthGaussian, vis_image, trans_int
 from cluster.posterior import posterior_prob
 

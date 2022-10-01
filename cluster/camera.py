@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 from utils import rend_util
 from cluster.third.syn_dataset import SynDataset
-from cluster.focus_sampler import FocusSampler
+from cluster.third.focus_sampler import FocusSampler
 from interface import *
 
 
