@@ -460,3 +460,30 @@ def resample_along_rays(origins, directions, radii, t_vals, weights, randomized,
     return new_t_vals, (means, covs)
 
 
+def sample_nerf(rays_o, rays_d, t_vals=None, weights=None, near=1.0, far=6.0, n_sample=64):
+    import collections
+    Rays = collections.namedtuple(
+        'Rays',
+        ('origins', 'directions', 'viewdirs', 'radii', 'lossmult', 'near', 'far'))
+    # ones = torch.ones_like(rays_o[..., 0:1])
+    rays = Rays(rays_o, rays_d, rays_d, 0.001, 1.0, near, far)
+    t_vals, samples = level_sample(0 if weights is None else 1, rays, t_vals, weights, n_sample, perturb=True)
+    x = samples[0]
+    return t_vals, x
+
+
+if __name__ == '__main__':
+    o = torch.rand(1000, 3).cuda()
+    d = torch.ones_like(o)
+    t, x = sample_nerf(o, d)
+    print(t.shape, x.shape)
+
+    t_mids = 0.5 * (t[..., :-1] + t[..., 1:])
+    t_dists = t[..., 1:] - t[..., :-1]
+    delta = t_dists * torch.linalg.norm(d[..., None, :], dim=-1)
+    # Note that we're quietly turning density from [..., 0] to [...].
+    """ density_delta = density[..., 0] * delta """
+
+    w = x[..., 0]
+    t, x = sample_nerf(o, d, t, w)
+    print(t.shape, x.shape)
