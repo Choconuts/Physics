@@ -81,7 +81,7 @@ class Scene:
         pose = torch.stack(self.data.pose_all).cuda()
         intrinsics = torch.stack(self.data.intrinsics_all).cuda()
         s = torch.linspace(-1, 1, res).cuda()
-        uv = torch.stack(torch.meshgrid([s, s]), -1)
+        uv = torch.stack(torch.meshgrid([s, s], indexing='xy'), -1)
         pose_selected = selector(pose)
         uv = uv.view(1, -1, 2).expand(len(pose_selected), -1, -1)
         uv_tex = self.uv_to_tex(uv)

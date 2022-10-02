@@ -53,8 +53,13 @@ class MatchScene(Scene):
 
         pose = torch.stack(self.data.pose_all).cuda()
         intrinsics = torch.stack(self.data.intrinsics_all).cuda()
-        s = torch.linspace(-1, 1, res).cuda()
-        uv = torch.stack(torch.meshgrid([s, s]), -1).view(-1, 2)
+        if res > 0:
+            s = torch.linspace(-1, 1, res).cuda()
+            uv = torch.stack(torch.meshgrid([s, s], indexing="xy"), -1).view(-1, 2)
+        else:
+            sx = torch.linspace(-1, 1, self.data.img_res[0]).cuda()
+            sy = torch.linspace(-1, 1, self.data.img_res[1]).cuda()
+            uv = torch.stack(torch.meshgrid([sy, sx], indexing="xy"), -1).view(-1, 2)
         pose_selected = selector(pose)
         uv = uv.view(1, -1, 2).expand(len(pose_selected), -1, -1)
         uv_tex = self.uv_to_tex(uv)

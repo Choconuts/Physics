@@ -1,13 +1,34 @@
+import os
 import torch
 import imgui
 import numpy as np
 from tqdm import trange
+from torchvision.io import write_png
 import torch.nn.functional as F
 from cluster.match import MatchScene, ui, SynDataset, FocusSampler, Inputable, visualize_field
 from utils import rend_util
 from cluster.third.model import MyNeRF, VNeRF
 from cluster.third.sampler import sample_nerf
 from tqdm import trange
+
+
+def torch_tree_map(fn, obj):
+    if isinstance(obj, (list, tuple)):
+        res = []
+        for i, o in enumerate(obj):
+            res.append(torch_tree_map(fn, o))
+        try:
+            return type(obj)(*res)
+        except TypeError:
+            return type(obj)(res)
+
+    if isinstance(obj, dict):
+        res = {}
+        for k, o in obj.items():
+            res[k] = torch_tree_map(fn, o)
+        return res
+
+    return fn(obj)
 
 
 class Opt(Inputable):
@@ -32,8 +53,8 @@ opt = Opt()
 class ObserveScene(MatchScene):
 
     def __init__(self, n_image):
-        # self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
-        self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
+        self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
+        # self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
         self.focus_sampler = FocusSampler(self.data)
         self.nerf = VNeRF()
         self.nerf.cuda()
@@ -84,6 +105,17 @@ class ObserveScene(MatchScene):
 
         return comp_rgb, weights, acc, distance
 
+    def save_image(self, img, tag=None):
+        if img.shape[-1] == 3:
+            img = img.permute(2, 0, 1)
+        save_root = f"vis/{self.__class__.__name__.lower().replace('scene', '')}"
+        if not os.path.exists(save_root):
+            os.makedirs(save_root)
+        img = img.expand(3, -1, -1).cpu() * 255
+        img = img.type(torch.uint8)
+        save_name = "img.png" if tag is None else f"img-{tag}.png"
+        write_png(img, os.path.join(save_root, save_name))
+
     @ui
     def show_sample(self):
         batch_size = 2048
@@ -99,8 +131,14 @@ class ObserveScene(MatchScene):
 
     @ui
     def train_nerf(self):
+        chunk = 8192
         batch_size = 2048
         num_sample = 128
+
+        def field(x):
+            dirs = -x / (x.norm(dim=-1, keepdim=True) + 1e-5)
+            rgb, a = self.nerf(x, dirs)
+            return a, torch.sigmoid(rgb)
 
         pbar = trange(100001)
         for i in pbar:
@@ -126,7 +164,33 @@ class ObserveScene(MatchScene):
             if i % 10 == 0:
                 pbar.set_postfix({"Loss": loss.item(), "PSNR": psnr.item()})
             if i % 100 == 0:
-                self.vis_field(lambda x: self.nerf.density(x), 1, radius=1.5)
+                self.vis_field(field, 3, radius=1.5)
+            if i % 1000 == 50:
+                idx = np.random.choice(self.data.n_cameras, []).item()
+                data_all = self.sample_image(idx, res=-1)
+
+                def render_chunk(rays_o, rays_d, rgb_gt, mask):
+                    with torch.no_grad():
+                        t_vals, x = sample_nerf(rays_o, rays_d)
+                        raw_rgb, raw_a = self.nerf(x, rays_d)
+                        rgb, weights, acc, distance = self.raw2output(raw_rgb, raw_a, t_vals, rays_d, white_bkgd=False)
+                        t_vals, x = sample_nerf(rays_o, rays_d, t_vals, weights, n_sample=num_sample)
+                        raw_rgb, raw_a = self.nerf(x, rays_d)
+                        rgb, weights, acc, distance = self.raw2output(raw_rgb, raw_a, t_vals, rays_d, white_bkgd=False)
+
+                        return rgb
+
+                results = []
+                for j in range(0, data_all[0].shape[0], chunk):
+                    chunk_data = torch_tree_map(lambda r: r[j:j + chunk], data_all)
+                    chunk_results = render_chunk(*chunk_data)
+                    ret = torch_tree_map(lambda x: x, chunk_results)
+                    results.append(ret)
+
+                img = torch.cat(results, 0)
+                img = img.view(*self.data.img_res, 3)
+
+                self.save_image(img, i)
             yield
 
 
