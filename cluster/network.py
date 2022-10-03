@@ -46,6 +46,41 @@ class Posterior(torch.nn.Module):
         return h
 
 
+class EasyPosterior(torch.nn.Module):
+    def __init__(self, n_layers=2, width=32):
+        super(EasyPosterior, self).__init__()
+        self.s = torch.nn.Parameter(torch.tensor(5.0))
+
+        self.rgb_embed = PE(3, num_freq=4)
+        layers = []
+        in_dim = self.rgb_embed.feature_dim()
+        for i in range(n_layers):
+            layer = nn.Sequential(
+                nn.Linear(in_dim, width),
+                nn.ReLU(),
+                nn.Linear(width, width),
+            )
+            in_dim = width + self.rgb_embed.feature_dim()
+            layers.append(layer)
+        self.n_layers = n_layers
+        self.layers = nn.ModuleList(layers)
+        self.out_linear = nn.Linear(width, 1)
+
+    def forward(self, x, rgb_all, dirs_all, mask_all):
+        """
+
+        :param x: N, 3
+        :param rgb_all: M, N, 3
+        :param dirs_all: M, N, 3
+        :param mask_all: M, N
+        :return:
+        """
+
+    def activation(self, diffs):
+        x = torch.clamp(self.s, min=0.02) * diffs - 5
+        return F.softplus(x)
+
+
 if __name__ == '__main__':
     posterior = Posterior()
     x = torch.rand(2048, 3)

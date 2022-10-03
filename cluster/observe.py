@@ -177,7 +177,7 @@ class ObserveScene(MatchScene):
             self.optimizer.step()
             if i % 10 == 0:
                 pbar.set_postfix({"Loss": loss.item(), "PSNR": psnr.item()})
-            if i % 100 == 0:
+            if opt.changed or i % 100 == 0:
                 self.vis_field(field, opt.t_val, radius=1.5)
             # if i % 1000 == 50:
             #     idx = np.random.choice(self.data.n_cameras, []).item()
