@@ -1,6 +1,6 @@
 import os
 import torch
-from cluster.third.model.fields import VNeRF
+from cluster.third.model.fields import VNeRF, PE
 
 
 class MyNeRF(torch.nn.Module):
