@@ -56,15 +56,15 @@ class FocusSampler:
 
     def scatter_sample(self, x):
         assert len(x.shape) == 2
-        x = x[None].expand(115, -1, -1)
+        x = x[None].expand(self.dataset.n_cameras, -1, -1)
 
         uv, ray_dirs = inv_camera_params(x, self.pose_inv, self.cam_loc, self.intrinsics)
         rgb = self.sample_images(uv)
 
         # TODO: add valid mask
-        uv_valid = torch.logical_and(uv >= 0, uv < torch.tensor(self.dataset.img_res).to(uv.device)).prod(-1).bool()
+        uv_valid = torch.logical_and(uv >= 0, uv < self.img_size).prod(-1).bool()
         if uv_valid.any() and self.masks.numel() > 0:
-            uv_valid[uv_valid.clone()] = (self.sample_masks(uv[uv_valid][None])).squeeze()
+            uv_valid[uv_valid.clone()] = (self.sample_masks(uv)).squeeze()[uv_valid]
 
         sample = {
             # "pose": torch.stack(poses, 0).cuda(),

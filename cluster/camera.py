@@ -32,7 +32,8 @@ def posterior(all_rgb, all_mask, dirs, all_dirs, ):
     # prob[mask.prod(0) == 0] = 0
     # return prob
 
-    return all_mask.prod(0)
+    rgb = (all_rgb * all_mask[..., None]).sum(0) / (all_mask[..., None].sum(0) + 0.0001)
+    return all_mask.prod(0), rgb
 
 
 class Opt(Inputable):
@@ -55,6 +56,7 @@ class Scene:
 
     def __init__(self, n_image=100):
         self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
+        # self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\drums", 100 // n_image)
         self.focus_sampler = FocusSampler(self.data)
 
     def vis_axis(self, poses=None):
@@ -136,13 +138,43 @@ class Scene:
             rgb = gt['rgb']
             prob = posterior(rgb, mask, x / (x.norm(dim=-1, keepdim=True) + 1e-5), sample['view_dir'])
 
-            return prob, x
+            return prob
 
+        self.vis_field(field, opt.x_val, res=80, radius=0.6)
         while True:
             if opt.changed:
-                yield self.vis_field(field, opt.x_val, res=60)
+                yield self.vis_field(field, opt.x_val, res=80, radius=0.6)
             else:
                 yield
+
+    @ui(opt)
+    def show_solid_dense(self):
+
+        out_x = None
+        out_c = None
+
+        for i in range(1024):
+            x = torch.rand(64 * 64 * 64, 3).cuda() * 1.6 - 0.8
+            sample, gt = self.focus_sampler.scatter_sample(x)
+            mask = sample['object_mask']
+            rgb = gt['rgb']
+            p, c = posterior(rgb, mask, x / (x.norm(dim=-1, keepdim=True) + 1e-5), sample['view_dir'])
+
+            x = x[p > 0.5]
+            c = c[p > 0.5]
+            if out_x is None:
+                out_x = x
+                out_c = c
+            else:
+                out_x = torch.cat([out_x, x], 0)
+                out_c = torch.cat([out_c, c], 0)
+
+        visualize_field(out_x.cpu().detach(), scalars=out_c.cpu().detach())
+        # while True:
+        #     if opt.changed:
+        #         yield self.vis_field(field, opt.x_val, res=80, radius=0.6)
+        #     else:
+        #         yield
 
     @ui(opt)
     def show_focus(self):
@@ -200,5 +232,5 @@ class Scene:
 
 
 if __name__ == '__main__':
-    scene = Scene(2)
-    scene.show_rays()
+    scene = Scene(100)
+    scene.show_solid_dense()

@@ -498,7 +498,7 @@ class SingleVarianceNetwork(nn.Module):
         self.register_parameter('variance', nn.Parameter(torch.tensor(init_val)))
 
     def forward(self, x):
-        return torch.ones([len(x), 1]) * torch.exp(self.variance * 10.0)
+        return torch.ones([len(x), 1], device=x.device) * torch.exp(self.variance * 10.0)
 
 
 def auto_flatten(f):
@@ -663,3 +663,6 @@ if __name__ == '__main__':
     x = torch.rand(100, 3).to("cuda")
     net.cuda()
     print(net(x).shape)
+
+    NeuSModel('', False, False)
+

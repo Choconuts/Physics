@@ -9,7 +9,7 @@ from cluster.match import MatchScene, ui, SynDataset, FocusSampler, Inputable, v
 from utils import rend_util
 from cluster.third.model import MyNeRF, VNeRF
 from cluster.third.sampler import sample_nerf
-from cluster.network import Posterior
+from cluster.network import Posterior, EasyPosterior
 
 
 def torch_tree_map(fn, obj):
@@ -53,14 +53,17 @@ opt = Opt()
 class ObserveScene(MatchScene):
 
     def __init__(self, n_image):
-        self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
-        # self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
+        # self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
+        self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
         self.focus_sampler = FocusSampler(self.data)
         self.nerf = VNeRF()
         self.nerf.cuda()
+        self.nerf2 = VNeRF()
+        self.nerf2.cuda()
         self.posterior = Posterior()
         self.posterior.cuda()
         self.optimizer = torch.optim.Adam([{"params": self.nerf.parameters(), "lr": 5e-4},
+                                           {"params": self.nerf2.parameters(), "lr": 2e-3},
                                            {"params": self.posterior.parameters(), "lr": 5e-4}], betas=(0.9, 0.99))
 
     def sample_uv(self, uv):
@@ -123,18 +126,22 @@ class ObserveScene(MatchScene):
         raw_rgb, raw_a = self.nerf(x, rays_d)
         dirs = rays_d[..., None, :].expand(x.shape).reshape(-1, 3)
         rgb_obs, mask_obs = self.sample_neighbor(x.view(-1, 3), dirs, -1)
-        raw_a = self.posterior(x, rgb_obs, dirs, mask_obs)
-        raw_a = raw_a.view(*raw_rgb.shape[:-1], 1)
-        rgb, weights, acc, distance = self.raw2output(raw_rgb, raw_a, t_vals, rays_d, white_bkgd=False)
-        return rgb, weights, acc, distance
+        raw_rgb_my = self.posterior(x, rgb_obs, dirs, mask_obs)
+        # raw_a_my = self.nerf2(x, rays_d)[1]
+        raw_rgb_my = raw_rgb_my.view(*raw_rgb.shape[:-1], -1)
+
+        fit_loss = ((raw_rgb - raw_rgb_my).abs()).mean()
+
+        rgb, weights, acc, distance = self.raw2output(raw_rgb_my, raw_a, t_vals, rays_d, white_bkgd=False)
+        return rgb, weights, acc, torch.tensor(0.).cuda()
 
     def volume_render(self, rays_o, rays_d, num_sample=128):
         t_vals, x = sample_nerf(rays_o, rays_d)
-        rgb, weights, acc, distance = self.query_model(x, rays_d, t_vals)
+        rgb, weights, acc, fit_loss = self.query_model(x, rays_d, t_vals)
         t_vals, x = sample_nerf(rays_o, rays_d, t_vals, weights, n_sample=num_sample)
-        rgb, weights, acc, distance = self.query_model(x, rays_d, t_vals)
+        rgb, weights, acc, fit_loss = self.query_model(x, rays_d, t_vals)
 
-        return rgb
+        return rgb, fit_loss
 
     @ui
     def show_sample(self):
@@ -160,10 +167,17 @@ class ObserveScene(MatchScene):
             rgb, a = self.nerf(x, dirs)
             return a, torch.sigmoid(rgb)
 
+        # def field(x):
+        #     dirs = -x / (x.norm(dim=-1, keepdim=True) + 1e-5)
+        #     dirs = dirs.view(-1, 3)
+        #     rgb_obs, mask_obs = self.sample_neighbor(x.view(-1, 3), dirs, -1)
+        #     raw_a_my = self.posterior(x, rgb_obs, dirs, mask_obs)
+        #     return raw_a_my, x
+
         pbar = trange(100001)
         for i in pbar:
             rays_o, rays_d, rgb_gt, mask = self.sample_batch(batch_size)
-            rgb = self.volume_render(rays_o, rays_d, num_sample=num_sample)
+            rgb, fit_loss = self.volume_render(rays_o, rays_d, num_sample=num_sample)
 
             mask = mask[..., None]
             mask_sum = mask.sum() + 1e-5
@@ -172,28 +186,95 @@ class ObserveScene(MatchScene):
             psnr = 20.0 * torch.log10(1.0 / (((rgb - rgb_gt) ** 2 * mask).sum() / (mask_sum * 3.0)).sqrt())
             loss = color_fine_loss
 
+            l1_loss = self.posterior.l1(batch_size)
+            loss = loss + l1_loss + fit_loss
+
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             if i % 10 == 0:
-                pbar.set_postfix({"Loss": loss.item(), "PSNR": psnr.item()})
+                pbar.set_postfix({"Loss": loss.item(), "color": color_fine_loss.item(),
+                                  "PSNR": psnr.item(), "l1": l1_loss.item(), "fit": fit_loss.item()})
             if opt.changed or i % 100 == 0:
                 self.vis_field(field, opt.t_val, radius=1.5)
-            # if i % 1000 == 50:
-            #     idx = np.random.choice(self.data.n_cameras, []).item()
-            #     data_all = self.sample_image(idx, res=-1)
-            #
-            #     results = []
-            #     for j in range(0, data_all[0].shape[0], chunk):
-            #         chunk_data = torch_tree_map(lambda r: r[j:j + chunk], data_all)
-            #         with torch.no_grad():
-            #             chunk_results = self.volume_render(chunk_data[0], chunk_data[1], num_sample=num_sample)
-            #         ret = torch_tree_map(lambda x: x, chunk_results)
-            #         results.append(ret)
-            #
-            #     img = torch.cat(results, 0)
-            #     img = img.view(*self.data.img_res, opt.t_val)
-            #     self.save_image(img, i)
+            if i % 1000 == 50:
+                idx = np.random.choice(self.data.n_cameras, []).item()
+                data_all = self.sample_image(idx, res=-1)
+
+                results = []
+                for j in range(0, data_all[0].shape[0], chunk):
+                    chunk_data = torch_tree_map(lambda r: r[j:j + chunk], data_all)
+                    with torch.no_grad():
+                        chunk_results = self.volume_render(chunk_data[0], chunk_data[1], num_sample=num_sample)
+                    ret = torch_tree_map(lambda x: x, chunk_results)
+                    results.append(ret[0])
+
+                img = torch.cat(results, 0)
+                img = img.view(*self.data.img_res, 3)
+                self.save_image(img, i)
+            yield
+
+    @ui(opt)
+    def train_nerf_inv(self):
+        chunk = 8192
+        batch_size = 2048
+        num_sample = 128
+
+        def field(x):
+            dirs = -x / (x.norm(dim=-1, keepdim=True) + 1e-5)
+            rgb, a = self.nerf(x, dirs)
+            return a, torch.sigmoid(rgb)
+
+        pbar = trange(100001)
+        for i in pbar:
+            # rays_o, rays_d, rgb_gt, mask = self.sample_batch(batch_size)
+
+            sample, gt = self.focus_sampler.scatter_sample(torch.rand(batch_size // 64, 3).cuda() * 3 - 1.5)
+            mask = sample['object_mask']
+            rgb_gt = gt['rgb']
+            rays_d = sample['view_dir']
+            rays_o = self.focus_sampler.cam_loc[:, None, :].expand(rays_d.shape)
+            mask = mask.reshape(-1)
+            rgb_gt = rgb_gt.reshape(-1, 3)[mask]
+            rays_d = rays_d.reshape(-1, 3)[mask]
+            rays_o = rays_o.reshape(-1, 3)[mask]
+            mask = mask[mask]
+
+            rgb, fit_loss = self.volume_render(rays_o, rays_d, num_sample=num_sample)
+
+            mask = mask[..., None]
+            mask_sum = mask.sum() + 1e-5
+            color_error = (rgb - rgb_gt) * mask
+            color_fine_loss = F.mse_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
+            psnr = 20.0 * torch.log10(1.0 / (((rgb - rgb_gt) ** 2 * mask).sum() / (mask_sum * 3.0)).sqrt())
+            loss = color_fine_loss
+
+            l1_loss = self.posterior.l1(batch_size)
+            loss = loss + l1_loss + fit_loss
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            if i % 10 == 0:
+                pbar.set_postfix({"Loss": loss.item(), "color": color_fine_loss.item(),
+                                  "PSNR": psnr.item(), "l1": l1_loss.item(), "fit": fit_loss.item()})
+            if opt.changed or i % 100 == 0:
+                self.vis_field(field, opt.t_val, radius=1.5)
+            if i % 1000 == 500:
+                idx = np.random.choice(self.data.n_cameras, []).item()
+                data_all = self.sample_image(idx, res=-1)
+
+                results = []
+                for j in range(0, data_all[0].shape[0], chunk):
+                    chunk_data = torch_tree_map(lambda r: r[j:j + chunk], data_all)
+                    with torch.no_grad():
+                        chunk_results = self.volume_render(chunk_data[0], chunk_data[1], num_sample=num_sample)
+                    ret = torch_tree_map(lambda x: x, chunk_results)
+                    results.append(ret[0])
+
+                img = torch.cat(results, 0)
+                img = img.view(*self.data.img_res, 3)
+                self.save_image(img, i)
             yield
 
 
