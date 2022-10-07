@@ -122,6 +122,17 @@ class ObserveScene(MatchScene):
         save_name = "img.png" if tag is None else f"img-{tag}.png"
         write_png(img, os.path.join(save_root, save_name))
 
+    def save_gray_image(self, img, tag=None):
+        if img.shape[-1] == 1:
+            img = img.permute(2, 0, 1)
+        save_root = f"vis/{self.__class__.__name__.lower().replace('scene', '')}"
+        if not os.path.exists(save_root):
+            os.makedirs(save_root)
+        img = img.expand(3, -1, -1).cpu() * 255
+        img = img.type(torch.uint8)
+        save_name = "depth.png" if tag is None else f"depth-{tag}.png"
+        write_png(img, os.path.join(save_root, save_name))
+
     def query_model(self, x, rays_d, t_vals):
         raw_rgb, raw_a = self.nerf(x, rays_d)
         dirs = rays_d[..., None, :].expand(x.shape).reshape(-1, 3)
@@ -130,18 +141,22 @@ class ObserveScene(MatchScene):
         # raw_a_my = self.nerf2(x, rays_d)[1]
         raw_rgb_my = raw_rgb_my.view(*raw_rgb.shape[:-1], -1)
 
-        fit_loss = ((raw_rgb - raw_rgb_my).abs()).mean()
+        # fit_loss = ((raw_rgb - raw_rgb_my).abs()).mean()
 
         rgb, weights, acc, distance = self.raw2output(raw_rgb_my, raw_a, t_vals, rays_d, white_bkgd=False)
-        return rgb, weights, acc, torch.tensor(0.).cuda()
+
+        # to disparity for rendering
+        distance = 1. / torch.max(1e-10 * torch.ones_like(distance, device=distance.device), distance / (acc + 1e-8))
+
+        return rgb, weights, acc, distance
 
     def volume_render(self, rays_o, rays_d, num_sample=128):
         t_vals, x = sample_nerf(rays_o, rays_d)
-        rgb, weights, acc, fit_loss = self.query_model(x, rays_d, t_vals)
+        rgb, weights, acc, distance = self.query_model(x, rays_d, t_vals)
         t_vals, x = sample_nerf(rays_o, rays_d, t_vals, weights, n_sample=num_sample)
-        rgb, weights, acc, fit_loss = self.query_model(x, rays_d, t_vals)
+        rgb, weights, acc, distance = self.query_model(x, rays_d, t_vals)
 
-        return rgb, fit_loss
+        return rgb, distance
 
     @ui
     def show_sample(self):
@@ -177,7 +192,7 @@ class ObserveScene(MatchScene):
         pbar = trange(100001)
         for i in pbar:
             rays_o, rays_d, rgb_gt, mask = self.sample_batch(batch_size)
-            rgb, fit_loss = self.volume_render(rays_o, rays_d, num_sample=num_sample)
+            rgb, distance = self.volume_render(rays_o, rays_d, num_sample=num_sample)
 
             mask = mask[..., None]
             mask_sum = mask.sum() + 1e-5
@@ -187,14 +202,14 @@ class ObserveScene(MatchScene):
             loss = color_fine_loss
 
             l1_loss = self.posterior.l1(batch_size)
-            loss = loss + l1_loss + fit_loss
+            loss = loss + l1_loss
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             if i % 10 == 0:
                 pbar.set_postfix({"Loss": loss.item(), "color": color_fine_loss.item(),
-                                  "PSNR": psnr.item(), "l1": l1_loss.item(), "fit": fit_loss.item()})
+                                  "PSNR": psnr.item(), "l1": l1_loss.item(),})
             if opt.changed or i % 100 == 0:
                 self.vis_field(field, opt.t_val, radius=1.5)
             if i % 1000 == 50:
@@ -202,16 +217,22 @@ class ObserveScene(MatchScene):
                 data_all = self.sample_image(idx, res=-1)
 
                 results = []
+                depths = []
                 for j in range(0, data_all[0].shape[0], chunk):
                     chunk_data = torch_tree_map(lambda r: r[j:j + chunk], data_all)
                     with torch.no_grad():
                         chunk_results = self.volume_render(chunk_data[0], chunk_data[1], num_sample=num_sample)
                     ret = torch_tree_map(lambda x: x, chunk_results)
                     results.append(ret[0])
+                    depths.append(ret[1])
 
                 img = torch.cat(results, 0)
+                dist = torch.cat(depths, 0)
+                dist = dist.view(*self.data.img_res, 1)
+
                 img = img.view(*self.data.img_res, 3)
                 self.save_image(img, i)
+                self.save_gray_image(dist, i)
             yield
 
     @ui(opt)
