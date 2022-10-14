@@ -45,9 +45,9 @@ class SynDataset(torch.utils.data.Dataset):
                 mask_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '')))
             if split == 'test':
                 ind = frame['file_path'].split('/')[1]
-                image_paths.append(os.path.join(self.instance_dir, frame['file_path'] + '_rgba.png'))
-                envmap6_image_paths.append(os.path.join(self.instance_dir, 'test_rli/envmap6_'+ ind + '.png'))
-                envmap12_image_paths.append(os.path.join(self.instance_dir, 'test_rli/envmap12_'+ ind + '.png'))
+                image_paths.append(os.path.join(self.instance_dir, frame['file_path'] + ('.png' if blender else '')))
+                # envmap6_image_paths.append(os.path.join(self.instance_dir, 'test_rli/envmap6_'+ ind + '.png'))
+                # envmap12_image_paths.append(os.path.join(self.instance_dir, 'test_rli/envmap12_'+ ind + '.png'))
         
         img_h, img_w = rend_util.load_rgb(image_paths[0]).shape[:2]
         camera_angle_x = float(meta['camera_angle_x'])

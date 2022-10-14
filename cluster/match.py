@@ -46,20 +46,24 @@ class MatchScene(Scene):
     def sample_gt_mask(self, uv, selector=None):
         return torch.ones_like(uv[..., 0]).bool()
 
-    def sample_image(self, idx, res=100):
+    def sample_image(self, idx, res=100, test=False):
+        if test:
+            data = self.test_data
+        else:
+            data = self.data
         if isinstance(idx, int):
             selector = lambda arr: arr[idx:idx+1]
         else:
             selector = idx
 
-        pose = torch.stack(self.data.pose_all).cuda()
-        intrinsics = torch.stack(self.data.intrinsics_all).cuda()
+        pose = torch.stack(data.pose_all).cuda()
+        intrinsics = torch.stack(data.intrinsics_all).cuda()
         if res > 0:
             s = torch.linspace(-1, 1, res).cuda()
             uv = torch.stack(torch.meshgrid([s, s], indexing="xy"), -1).view(-1, 2)
         else:
-            sx = torch.linspace(-1, 1, self.data.img_res[0]).cuda()
-            sy = torch.linspace(-1, 1, self.data.img_res[1]).cuda()
+            sx = torch.linspace(-1, 1, data.img_res[0]).cuda()
+            sy = torch.linspace(-1, 1, data.img_res[1]).cuda()
             uv = torch.stack(torch.meshgrid([sy, sx], indexing="xy"), -1).view(-1, 2)
         pose_selected = selector(pose)
         uv = uv.view(1, -1, 2).expand(len(pose_selected), -1, -1)

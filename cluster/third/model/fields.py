@@ -62,6 +62,11 @@ class VNeRF(nn.Module):
             a, rgb = self.mlp(x, c)
         return rgb, a
 
+    def l1(self):
+        x = torch.rand(10000, 3).cuda() * 3 - 1.5
+        sigma = self.density(x)
+        return torch.abs(sigma).mean() * 0.01
+
 
 @gin.register
 @gin.configurable

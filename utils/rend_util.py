@@ -103,9 +103,11 @@ def rot_to_quat(R):
 def load_rgb(path):
     img = imageio.imread(path)[:, :, :3]
     img = np.float32(img)
+
+    # do not gamma
     if not path.endswith('.exr'):
         img = img / 255.
-        img = np.power(img, 2.2)
+        # img = np.power(img, 2.2)
 
     return img
 

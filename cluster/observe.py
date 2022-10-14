@@ -55,6 +55,9 @@ class ObserveScene(MatchScene):
     def __init__(self, n_image):
         # self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
         self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
+        # self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\drums", 100 // n_image)
+        self.test_data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image, split="test")
+        # self.test_data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\drums", 100 // n_image, split="test")
         self.focus_sampler = FocusSampler(self.data)
         self.nerf = VNeRF()
         self.nerf.cuda()
@@ -156,7 +159,7 @@ class ObserveScene(MatchScene):
         t_vals, x = sample_nerf(rays_o, rays_d, t_vals, weights, n_sample=num_sample)
         rgb, weights, acc, distance = self.query_model(x, rays_d, t_vals)
 
-        return rgb, distance
+        return rgb, distance, acc
 
     @ui
     def show_sample(self):
@@ -192,7 +195,7 @@ class ObserveScene(MatchScene):
         pbar = trange(100001)
         for i in pbar:
             rays_o, rays_d, rgb_gt, mask = self.sample_batch(batch_size)
-            rgb, distance = self.volume_render(rays_o, rays_d, num_sample=num_sample)
+            rgb, distance, acc = self.volume_render(rays_o, rays_d, num_sample=num_sample)
 
             mask = mask[..., None]
             mask_sum = mask.sum() + 1e-5
@@ -201,7 +204,7 @@ class ObserveScene(MatchScene):
             psnr = 20.0 * torch.log10(1.0 / (((rgb - rgb_gt) ** 2 * mask).sum() / (mask_sum * 3.0)).sqrt())
             loss = color_fine_loss
 
-            l1_loss = self.posterior.l1(batch_size)
+            l1_loss = self.nerf.l1()
             loss = loss + l1_loss
 
             self.optimizer.zero_grad()
@@ -214,7 +217,7 @@ class ObserveScene(MatchScene):
                 self.vis_field(field, opt.t_val, radius=1.5)
             if i % 1000 == 50:
                 idx = np.random.choice(self.data.n_cameras, []).item()
-                data_all = self.sample_image(idx, res=-1)
+                data_all = self.sample_image(idx, res=-1, test=True)
 
                 results = []
                 depths = []
@@ -229,6 +232,10 @@ class ObserveScene(MatchScene):
                 img = torch.cat(results, 0)
                 dist = torch.cat(depths, 0)
                 dist = dist.view(*self.data.img_res, 1)
+
+                mse_loss = ((img - self.test_data.rgb_images[idx][..., :3].cuda()) ** 2).mean().cpu()
+                psnr = -10. / np.log(10.) * np.log(mse_loss)
+                print("Test PSNR", psnr.item())
 
                 img = img.view(*self.data.img_res, 3)
                 self.save_image(img, i)
@@ -282,8 +289,8 @@ class ObserveScene(MatchScene):
             if opt.changed or i % 100 == 0:
                 self.vis_field(field, opt.t_val, radius=1.5)
             if i % 1000 == 500:
-                idx = np.random.choice(self.data.n_cameras, []).item()
-                data_all = self.sample_image(idx, res=-1)
+                idx = np.random.choice(self.test_data.n_cameras, []).item()
+                data_all = self.sample_image(idx, res=-1, test=True)
 
                 results = []
                 for j in range(0, data_all[0].shape[0], chunk):
@@ -294,12 +301,14 @@ class ObserveScene(MatchScene):
                     results.append(ret[0])
 
                 img = torch.cat(results, 0)
-                img = img.view(*self.data.img_res, 3)
+                img = img.view(*self.test_data.img_res, 3)
+
                 self.save_image(img, i)
             yield
 
 
 if __name__ == '__main__':
+    torch.random.manual_seed(0)
     scene = ObserveScene(100)
     scene.train_nerf()
 

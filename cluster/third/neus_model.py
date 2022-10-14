@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from cluster.third.utils import *
+from cluster.third.utils_old import *
 from cluster.third.schedule import *
 
 
