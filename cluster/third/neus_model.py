@@ -626,7 +626,7 @@ class ImplicitNetworkMy(nn.Module):
         gin.parse_config_file(os.path.join(NEUS_LOG_DIR, "config.gin"))
 
         self.neus_model = NeuSModel(**neus_kwargs)
-        state = torch.load(os.path.join(NEUS_LOG_DIR, "050000.tar"))
+        state = torch.load(os.path.join(NEUS_LOG_DIR, "200000.tar"))
         step = state['global_step']
         self.neus_model.load_state_dict(state['model'])
         Curve.stepping(self.neus_model, step)
