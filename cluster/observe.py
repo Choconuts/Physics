@@ -52,9 +52,11 @@ opt = Opt()
 
 class ObserveScene(MatchScene):
 
-    def __init__(self, n_image):
-        # self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
-        self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
+    def __init__(self, n_image, dh=False):
+        if dh:
+            self.data = SynDataset(r"E:\BaiduNetdiskDownload\colmap_result", 458 // n_image, blender=False)
+        else:
+            self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image)
         # self.data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\drums", 100 // n_image)
         self.test_data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\lego", 100 // n_image, split="test")
         # self.test_data = SynDataset(r"G:\Repository\nerf-pytorch\data\nerf_synthetic\drums", 100 // n_image, split="test")

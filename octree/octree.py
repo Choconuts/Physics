@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 
 
-DEBUG_OCTREE = False
+DEBUG_OCTREE = True
 
 
 def valid_box(boxes):
@@ -72,9 +72,9 @@ def intersect_box(boxes, rays_o, rays_d, forward_only=True):
     far = torch.minimum(torch.minimum(t2[..., 0:1], t2[..., 1:2]), t2[..., 2:3])
 
     if forward_only:
-        return torch.logical_and(near < far, far > 0), torch.maximum(near, torch.zeros_like(near)), far
+        return torch.logical_and(near <= far, far >= 0), torch.maximum(near, torch.zeros_like(near)), far
 
-    return near < far, near, far
+    return near <= far, near, far
 
 
 def divide(boxes):
@@ -201,21 +201,36 @@ class Octree:
         ptr[k] = self.query(pos[k])[..., 0]
         k = ptr > 0
 
+        st = time.time()
+        ii = 0
         while k.any():
+            print(ii, "intersect", time.time() - st)
             valid, near, far = intersect_box(self.boxes[ptr[k]], pos[k], rays_d[k])
-            assert valid.all()
-            assert (near == 0).all()
-            t[k] = t[k] + far - near + eps
 
+            if DEBUG_OCTREE:
+                if (near != 0).any():
+                    tmp = near != 0
+                    assert (near[tmp].abs() < 1e-4).all()
+                    near[tmp] = 0
+                if (~valid).any():
+                    assert (far[~valid[..., 0]].abs() < 1e-4).all()
+                    far[~valid[..., 0]] = near[~valid[..., 0]]
+
+            t[k] = t[k] + far - near + eps
+            print(ii, "query", time.time() - st)
             pos[k] = rays_o[k] + t[k] * rays_d[k]
             ptr[k] = self.query(pos[k])[..., 0]
             k = ptr > 0
+
+            print(ii, "hit", time.time() - st)
+            ii += 1
 
             if k.any():
                 hit = hit_fn(self.boxes[ptr[k]]).bool()
                 if len(hit.shape) == 2:
                     hit = hit[..., 0]
                 k[k.clone()] = ~hit
+            print(ii, "end", time.time() - st)
 
         return t.reshape(init_shape)
 
