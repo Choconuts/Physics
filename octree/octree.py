@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 
 
-DEBUG_OCTREE = True
+DEBUG_OCTREE = False
 
 
 def valid_box(boxes):
@@ -147,7 +147,10 @@ class Octree:
             assert self.boxes.shape[0] == self.links.shape[0] == self.non_leaf.shape[0]
 
         self.combine_empty(max_depth)
-        self.cache_index = self.gen_grid_index(max(min_depth, 5))
+        self.cache_index = self.gen_grid_index(max(min_depth, 6))
+
+        bytes = (self.boxes.numel() + self.boxes.numel() + self.non_leaf.numel() + self.cache_index.numel()) * 4
+        print(self.boxes.shape[0], "boxes", bytes // 1024 // 1024, "MB")
 
     def combine_empty(self, max_depth):
         leaf_size = self.boxes[0, 3:] / (2 ** max_depth)
@@ -172,10 +175,17 @@ class Octree:
         anchor = torch.stack(torch.meshgrid([lsp, lsp, lsp], indexing="ij"), -1).view(-1, 3)
         anchor = anchor + 0.5 / res
         anchor = into_box(self.boxes[0], anchor, inv=True)
-        index = self.query(anchor)
+        index = self.query(anchor, depth)
         return index.view(res, res, res)
 
-    def query(self, x):
+    def get_cache(self, x):
+        min_res = self.cache_index.shape
+        local_x = into_box(self.boxes[0], x)
+        idx = torch.split((local_x * torch.tensor(min_res, device=local_x.device)).floor().long(), 1, -1)
+        ptr = self.cache_index[idx][..., 0]
+        return ptr
+
+    def query(self, x, max_depth=-1, no_cache=False):
         """
         [..., 3] -> [..., 1]
         """
@@ -186,13 +196,29 @@ class Octree:
         all_ptr = -torch.ones_like(x[..., 0], dtype=torch.long)
         x = x[inside_root]
 
+        if x.numel() == 0:
+            return all_ptr
+
+        if not no_cache and self.cache_index is not None:
+            min_res = self.cache_index.shape
+            local_x = into_box(self.boxes[0], x)
+            idx = torch.split((local_x * torch.tensor(min_res, device=local_x.device)).floor().long(), 1, -1)
+            ptr = self.cache_index[idx][..., 0]
+
+            # assert (self.query(x, 6, True)[..., 0] == ptr).all()
+
+        else:
+            ptr = torch.zeros_like(x[..., 0], dtype=torch.long)
+
         if DEBUG_OCTREE:
             assert inside_box(self.boxes[0], x).all()
 
-        ptr = torch.zeros_like(x[..., 0], dtype=torch.long)
         k = self.non_leaf[ptr].nonzero()[..., 0]
 
         while k.numel() > 0:
+            if max_depth == 0:
+                break
+            max_depth -= 1
 
             if DEBUG_OCTREE:
                 assert (k < ptr.shape[0]).all() and (k >= 0).all()
@@ -233,7 +259,7 @@ class Octree:
 
         return ptrs
 
-    def cast(self, rays_o, rays_d, hit_fn, eps=1e-4):
+    def cast(self, rays_o, rays_d, hit_fn, eps=5e-4):
         """
             [..., 3], [..., ?, 3] -> first hit box satisfying hit_fn (leaf only)
         """
@@ -259,7 +285,6 @@ class Octree:
         st = time.time()
         ii = 0
         while k.any():
-            print(ii, "intersect", time.time() - st)
             valid, near, far = intersect_box(self.boxes[ptr[k]], pos[k], rays_d[k])
 
             if DEBUG_OCTREE:
@@ -272,12 +297,10 @@ class Octree:
                     far[~valid[..., 0]] = near[~valid[..., 0]]
 
             t[k] = t[k] + far - near + eps
-            print(ii, "query", time.time() - st)
             pos[k] = rays_o[k] + t[k] * rays_d[k]
             ptr[k] = self.query(pos[k])[..., 0]
             k = ptr > 0
 
-            print(ii, "hit", time.time() - st)
             ii += 1
 
             if k.any():
@@ -285,7 +308,6 @@ class Octree:
                 if len(hit.shape) == 2:
                     hit = hit[..., 0]
                 k[k.clone()] = ~hit
-            print(ii, "end", time.time() - st)
 
         return t.reshape(init_shape)
 
@@ -332,6 +354,9 @@ class Stack:
 
 
 if __name__ == '__main__':
+    torch.random.manual_seed(0)
+    np.random.seed(0)
+
     boxes = [[0, 0, 0, 2, 2, 2], [1, 1, 1, 2, 2, 2.]]
     rays_o = [[4, 4, 4], [3, 3, 4.]]
     rays_d = [[-1, -1, -1], [-1, -1, -1.]]
@@ -398,15 +423,11 @@ if __name__ == '__main__':
     # print(stack)
     # print(stack.peek())
 
-    x = torch.rand(5000, 3, device="cuda")
-
-    st = time.time()
-    for i in range(10):
+    for i in range(10000):
+        x = torch.rand(50000, 3, device="cuda")
         a = octree.relative_query(x).peek()
-    print(time.time() - st)
-    st = time.time()
-    for i in range(10):
         b = octree.query(x)
-    print(time.time() - st)
-    print((a == b[..., 0]).all())
-
+        if not (a == b[..., 0]).all():
+            t = octree.query(x[(a != b[..., 0]).nonzero()[0]])
+            print(t)
+        print(".")

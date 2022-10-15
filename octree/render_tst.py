@@ -168,7 +168,12 @@ def cost_time():
 
 
 if __name__ == '__main__':
-    # A().show_boxes()
+    A().show_boxes()
+    octree = no.octree
+    del no
+    del scene
+    # del octree
+    torch.cuda.empty_cache()
     cost_time()
     # A().show_bad_case()
 
