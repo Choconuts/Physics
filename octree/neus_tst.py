@@ -5,7 +5,7 @@ import torch
 
 from cluster.observe import *
 from cluster.match import ImplicitNetworkMy
-from octree import Octree, inside_box
+from octree import Octree, inside_box, OctreeSDF
 
 
 class NeuSOctree:
@@ -47,7 +47,7 @@ class NeuSOctree:
         return t
 
 
-no = NeuSOctree(max_depth=10)
+# no = NeuSOctree(max_depth=10)
 scene = ObserveScene(20, dh=False)
 
 
@@ -150,9 +150,34 @@ def cost_time():
     print("[Cost]", f"trace {n_it} images of {n_res}x{n_res}, cost {time.time() - st:.4f} seconds.")
 
 
+def render_sdf_octree():
+    nerf = ImplicitNetworkMy()
+    nerf.cuda()
+
+    def sdf(x):
+        return nerf(x)[..., 0]
+
+    with torch.no_grad():
+        osdf = OctreeSDF(sdf, [[-1.5] * 3, [1.5] * 3])
+
+    st = time.time()
+    for i in range(20):
+        rays_o, rays_d, rgb, mask = scene.sample_image(i, -1)
+        # print(rays_o.shape, rays_d.shape, rgb.shape, mask.shape)
+        t = osdf.cast(rays_o, rays_d)
+        p = rays_o + t * rays_d
+        with torch.no_grad():
+            a = nerf(p, rays_d)
+            rgb = nerf.color(p, rays_d, rays_d, a[..., 1:])
+
+        scene.save_image(rgb.view(*scene.data.img_res, 3), i)
+        scene.save_gray_image(t.view(*scene.data.img_res) / 4, i)
+    print("[Cost]", f"trace {20} images, cost {time.time() - st:.4f} seconds.")
+
+
 if __name__ == '__main__':
     # A().show_boxes()
-    render()
+    render_sdf_octree()
     # A().show_bad_case()
 
 

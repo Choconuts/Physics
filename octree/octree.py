@@ -263,7 +263,7 @@ class Octree:
 
         return ptrs
 
-    def cast(self, rays_o, rays_d, hit_fn, eps=5e-4):
+    def cast(self, rays_o, rays_d, hit_fn, eps=5e-4, return_full=False, fn_use_ptr=False):
         """
             [..., 3], [..., ?, 3] -> first hit box satisfying hit_fn (leaf only)
         """
@@ -286,7 +286,6 @@ class Octree:
         ptr[k] = self.query(pos[k])[..., 0]
         k = ptr >= 0
 
-        st = time.time()
         ii = 0
         while k.any():
             valid, near, far = intersect_box(self.boxes[ptr[k]], pos[k], rays_d[k])
@@ -308,10 +307,13 @@ class Octree:
             ii += 1
 
             if k.any():
-                hit = hit_fn(self.boxes[ptr[k]]).bool()
+                hit = hit_fn(ptr[k] if fn_use_ptr else self.boxes[ptr[k]]).bool()
                 if len(hit.shape) == 2:
                     hit = hit[..., 0]
                 k[k.clone()] = ~hit
+
+        if return_full:
+            return t.reshape(init_shape), ptr.reshape(init_shape), pos.reshape(init_shape)
 
         return t.reshape(init_shape)
 
@@ -355,6 +357,83 @@ class Stack:
 
     def __repr__(self):
         return str(self.stack) + "\n" + str(self.ptr)
+
+
+class OctreeSDF:
+
+    def __init__(self, sdf_fn, bounds, thr=0.4):
+        box = bounds[0], [bounds[1][i] - bounds[0][i] for i in range(3)]
+        self.octree = Octree(*box)
+
+        def div_fn(boxes):
+            size = boxes[..., 3:]
+            center = boxes[..., :3] + size * 0.5
+            return sdf_fn(center).abs() < size.norm(dim=-1) * thr
+
+        self.octree.build(div_fn, 10, 3)
+        leaf_size = self.octree.boxes[0, 3:] / (2 ** self.octree.max_depth)
+        centers = self.octree.boxes[..., :3] + self.octree.boxes[..., 3:] * thr
+
+        chunk = 8192
+        res = []
+        for j in range(0, centers.shape[0], chunk):
+            res.append(prox_gradients(sdf_fn, centers[j:j + chunk], leaf_size.min().item() * 2))
+        self.sdf_grad = torch.cat(res, 0)
+        self.sdf_grad = self.sdf_grad / torch.clamp(torch.norm(self.sdf_grad, dim=-1, keepdim=True), min=1e-4)
+        res = []
+        for j in range(0, centers.shape[0], chunk):
+            res.append(sdf_fn(centers[j:j + chunk]))
+        self.sdf_val = torch.cat(res, 0)
+        self.centers = centers
+
+        self.min_step = leaf_size.min().item() + 1e-4
+
+    def hit(self, ptr):
+        is_leaf = (self.octree.boxes[ptr][..., 3:] < self.min_step).prod(-1).bool()
+        is_surface = self.sdf_val[ptr].abs() < self.min_step
+        return torch.logical_and(is_leaf, is_surface)
+
+    def cast(self, rays_o, rays_d):
+        t, ptr, x = self.octree.cast(rays_o, rays_d, self.hit, return_full=True, fn_use_ptr=True)
+        ptr = ptr[..., 0]
+        t = t[..., 0]
+        valid = ptr >= 0
+
+        if valid.any():
+            normal = self.sdf_grad[ptr[valid]]
+            point = self.centers[ptr[valid]] - normal * self.sdf_val[ptr[valid]].view(-1, 1)
+            dist = ((point - x[valid]) * normal).sum(-1)
+            speed = (rays_d[valid] * normal).sum(-1)
+            speed[speed == 0] = 1e-4
+            dt = torch.clamp(dist / speed, -self.min_step * 4, self.min_step * 4)
+            t[valid] += dt
+
+        return t[..., None]
+
+
+def prox_gradients(func, x, dx, diff=False):
+    if diff:
+        y0 = func(x)[..., None]
+        grads = []
+        for i in range(x.shape[-1]):
+            ofs = torch.zeros_like(x)
+            ofs[..., i] = dx
+            y1 = func(x + ofs)[..., None]
+            grads.append((y1 - y0) / dx)
+        return torch.cat(grads, -1)
+    not_eval = torch.is_grad_enabled()
+    with torch.enable_grad():
+        x.requires_grad_(True)
+        y = func(x)
+        d_output = torch.ones_like(y, requires_grad=False, device=y.device)
+        gradients = torch.autograd.grad(
+            outputs=y,
+            inputs=x,
+            grad_outputs=d_output,
+            create_graph=not_eval,
+            retain_graph=not_eval,
+            only_inputs=True)[0]
+    return gradients
 
 
 if __name__ == '__main__':
