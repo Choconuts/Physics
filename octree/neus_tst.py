@@ -47,7 +47,7 @@ class NeuSOctree:
         return t
 
 
-no = NeuSOctree(max_depth=9)
+no = NeuSOctree(max_depth=10)
 scene = ObserveScene(20, dh=False)
 
 

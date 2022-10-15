@@ -65,10 +65,6 @@ class NeRFOctree:
         return t
 
 
-no = NeRFOctree(max_depth=9)
-scene = ObserveScene(20, dh=True)
-
-
 class A:
     @ui
     def show(self):
@@ -168,6 +164,9 @@ def cost_time():
 
 
 if __name__ == '__main__':
+    no = NeRFOctree(max_depth=9)
+    scene = ObserveScene(20, dh=True)
+
     A().show_boxes()
     octree = no.octree
     del no

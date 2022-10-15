@@ -129,6 +129,8 @@ class Octree:
                 dived = torch.ones_like(boxes[..., 0:1], dtype=torch.long)
             else:
                 dived = div_fn(boxes)
+            if not dived.any():
+                break
             k = dived.nonzero()[..., 0]
             n = k.shape[0]
             self.non_leaf[s:e] = dived.view(-1, 1)
@@ -148,17 +150,19 @@ class Octree:
 
         self.combine_empty(max_depth)
         self.cache_index = self.gen_grid_index(max(min_depth, 6))
+        self.max_depth = max_depth
 
         bytes = (self.boxes.numel() + self.boxes.numel() + self.non_leaf.numel() + self.cache_index.numel()) * 4
         print(self.boxes.shape[0], "boxes", bytes // 1024 // 1024, "MB")
 
-    def combine_empty(self, max_depth):
+    def combine_empty(self, max_depth, not_empty_fn=None):
         leaf_size = self.boxes[0, 3:] / (2 ** max_depth)
 
-        def is_cell(bosex):
-            return (bosex[..., 3:] < leaf_size + 1e-4).prod(-1).bool()
+        if not_empty_fn is None:
+            def not_empty_fn(bosex):
+                return (bosex[..., 3:] < leaf_size + 1e-4).prod(-1).bool()
 
-        has_cell_child = is_cell(self.boxes)
+        has_cell_child = not_empty_fn(self.boxes)
         non_leaf = self.non_leaf[..., 0].bool()
 
         for i in range(max_depth):
@@ -167,7 +171,7 @@ class Octree:
             has_cell_child[non_leaf] = not_empty
 
         self.non_leaf[non_leaf] = has_cell_child.long()[..., None][non_leaf]
-        self.max_depth = max_depth
+        self.leaf_size = leaf_size
 
     def gen_grid_index(self, depth):
         res = 2 ** depth
