@@ -99,6 +99,8 @@ class Octree:
         self.device = device
         if device == "cuda":
             self.cuda()
+        self.max_depth = -1
+        self.cache_index = None
 
     def cuda(self):
         self.device = "cuda"
@@ -144,6 +146,35 @@ class Octree:
             assert valid_box(self.boxes).all()
             assert self.boxes.shape[0] == self.links.shape[0] == self.non_leaf.shape[0]
 
+        self.combine_empty(max_depth)
+        self.cache_index = self.gen_grid_index(max(min_depth, 5))
+
+    def combine_empty(self, max_depth):
+        leaf_size = self.boxes[0, 3:] / (2 ** max_depth)
+
+        def is_cell(bosex):
+            return (bosex[..., 3:] < leaf_size + 1e-4).prod(-1).bool()
+
+        has_cell_child = is_cell(self.boxes)
+        non_leaf = self.non_leaf[..., 0].bool()
+
+        for i in range(max_depth):
+            ptr = self.links[non_leaf]
+            not_empty = has_cell_child[ptr].sum(-1).bool()
+            has_cell_child[non_leaf] = not_empty
+
+        self.non_leaf[non_leaf] = has_cell_child.long()[..., None][non_leaf]
+        self.max_depth = max_depth
+
+    def gen_grid_index(self, depth):
+        res = 2 ** depth
+        lsp = torch.linspace(0, 1.0, res + 1, device=self.boxes.device)[:-1]
+        anchor = torch.stack(torch.meshgrid([lsp, lsp, lsp], indexing="ij"), -1).view(-1, 3)
+        anchor = anchor + 0.5 / res
+        anchor = into_box(self.boxes[0], anchor, inv=True)
+        index = self.query(anchor)
+        return index.view(res, res, res)
+
     def query(self, x):
         """
         [..., 3] -> [..., 1]
@@ -178,6 +209,30 @@ class Octree:
         all_ptr[inside_root] = ptr
         return all_ptr.view(init_shape)
 
+    def relative_query(self, x, ptrs=None):
+        """
+            [N, 3] x [N, 1] -> [N, 1] (move ptr)
+        """
+        if ptrs is None:
+            ptrs = Stack(x.shape[0], self.max_depth + 1)
+            ptrs.push(torch.zeros_like(x[..., 0], dtype=torch.long))
+        else:
+            inside = inside_box(self.boxes[ptrs.peek()], x)[..., 0]
+            while (~inside).any():
+                ptrs.pop(~inside)
+                inside = inside_box(self.boxes[ptrs.peek()], x)[..., 0]
+
+        k = self.non_leaf[ptrs.peek()].bool()[..., 0]
+
+        while k.any():
+            boxes = self.boxes[ptrs.peek(k)]
+            oct_idx = which_oct_cell(boxes, x[k])
+            sub_links = torch.gather(self.links[ptrs.peek(k)], -1, oct_idx[:, None])[..., 0]
+            ptrs.push(sub_links, k)
+            k = self.non_leaf[ptrs.peek()].bool()[..., 0]
+
+        return ptrs
+
     def cast(self, rays_o, rays_d, hit_fn, eps=1e-4):
         """
             [..., 3], [..., ?, 3] -> first hit box satisfying hit_fn (leaf only)
@@ -199,7 +254,7 @@ class Octree:
         pos = torch.zeros_like(rays_o)
         pos[k] = rays_o[k] + t[k] * rays_d[k]
         ptr[k] = self.query(pos[k])[..., 0]
-        k = ptr > 0
+        k = ptr >= 0
 
         st = time.time()
         ii = 0
@@ -235,6 +290,47 @@ class Octree:
         return t.reshape(init_shape)
 
 
+class Stack:
+
+    def __init__(self, n, cap, device="cuda"):
+        self.stack = -torch.ones(n, cap + 1, device=device, dtype=torch.long)
+        self.ptr = torch.zeros(n, dtype=torch.long, device=device)
+        self.mask = None
+
+    def make_mask(self, mask):
+        if mask is None:
+            if self.mask is None:
+                mask = torch.ones_like(self.ptr).bool()
+            else:
+                mask = self.mask
+        elif self.mask is not None:
+            mask = torch.where(self.mask, mask, self.mask)
+        return mask
+
+    def push(self, values, mask=None):
+        mask = self.make_mask(mask)
+        self.ptr[mask] = self.ptr[mask] + 1
+        self.stack[mask, self.ptr[mask]] = values
+        assert self.ptr.max() < self.stack.shape[-1]
+
+    def peek(self, mask=None):
+        mask = self.make_mask(mask)
+        return torch.gather(self.stack[mask], -1, self.ptr[mask][..., None])[..., 0]
+
+    def pop(self, mask=None):
+        mask = self.make_mask(mask)
+        self.stack[mask, self.ptr[mask]] = -1
+        self.ptr[mask] = self.ptr[mask] - 1
+        assert self.ptr.min() >= 0
+
+    def masked(self, mask):
+        self.mask = mask
+        return self
+
+    def __repr__(self):
+        return str(self.stack) + "\n" + str(self.ptr)
+
+
 if __name__ == '__main__':
     boxes = [[0, 0, 0, 2, 2, 2], [1, 1, 1, 2, 2, 2.]]
     rays_o = [[4, 4, 4], [3, 3, 4.]]
@@ -259,32 +355,58 @@ if __name__ == '__main__':
         dist = (centers - 0.5).norm(dim=-1)
         return (dist - 0.4).abs() < 0.01
 
-    torch.manual_seed(1)
-
-    # octree = Octree([0, 0, 0], [1, 1, 1])
-    # octree.build(tst_fn, 5, 3)
-    # x = torch.rand(8024, 3)
-    # # x = torch.tensor([[0.3, 0.7, 0.3]])
-    # ptr = octree.query(x)
-    # # draw_boxes(octree.boxes[ptr.flatten()])
-    # # plt.show()
+    # torch.manual_seed(1)
     #
-
+    # # octree = Octree([0, 0, 0], [1, 1, 1])
+    # # octree.build(tst_fn, 5, 3)
+    # # x = torch.rand(8024, 3)
+    # # # x = torch.tensor([[0.3, 0.7, 0.3]])
+    # # ptr = octree.query(x)
+    # # # draw_boxes(octree.boxes[ptr.flatten()])
+    # # # plt.show()
+    # #
+    #
     octree = Octree([0, 0, 0], [1, 1, 1])
     octree.build(tst_fn, 10, 5)
 
     out = octree.query(torch.tensor([10, 10, 10], device="cuda"))
     print(out)
+    #
+    # st = time.time()
+    # for i in range(1000):
+    #     x = torch.rand(1024 * 256, 3).cuda()
+    #     ptr = octree.query(x)
+    # print(time.time() - st)
+    #
+    # res = tst_fn(octree.boxes[ptr]) * 100 + 1
+    # stride = 1
+    # plt.scatter(x[::stride, 0].cpu(), x[::stride, 1].cpu(), s=0.01, c=res[::stride].cpu())
+    # plt.show()
+
+    # stack = Stack(5, 8)
+    # mask = torch.tensor([0, 1, 1, 0, 1], device="cuda").bool()
+    # mask2 = torch.tensor([0, 0, 1, 0, 0], device="cuda").bool()
+    # values = torch.tensor([3, 2, 4], device="cuda")
+    # values2 = torch.tensor([1] * 5, device="cuda")
+    # stack.push(values2)
+    # stack.push(values, mask)
+    # print(stack)
+    # print(stack.peek())
+    # stack.pop(mask2)
+    # print(stack)
+    # stack.pop()
+    # print(stack)
+    # print(stack.peek())
+
+    x = torch.rand(5000, 3, device="cuda")
 
     st = time.time()
-    for i in range(1000):
-        x = torch.rand(1024 * 256, 3).cuda()
-        ptr = octree.query(x)
+    for i in range(10):
+        a = octree.relative_query(x).peek()
     print(time.time() - st)
-
-    res = tst_fn(octree.boxes[ptr]) * 100 + 1
-    stride = 1
-    plt.scatter(x[::stride, 0].cpu(), x[::stride, 1].cpu(), s=0.01, c=res[::stride].cpu())
-    plt.show()
-
+    st = time.time()
+    for i in range(10):
+        b = octree.query(x)
+    print(time.time() - st)
+    print((a == b[..., 0]).all())
 

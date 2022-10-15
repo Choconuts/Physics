@@ -11,7 +11,7 @@ class Opt(Inputable):
     def __init__(self):
         self.p = (0.4, 0.4, 0.4)
         self.max_depth = 5
-        self.min_depth = 1
+        self.min_depth = 2
         self.add = False
 
     def gui(self, label, *args, **kwargs):
@@ -29,8 +29,13 @@ class Scene:
     def __init__(self):
         self.octree = Octree([0, 0, 0], [1, 1, 1])
 
-    def vis_boxes(self):
-        box_min, box_size = torch.split(self.octree.boxes, [3, 3], -1)
+    def vis_boxes(self, non_leaf=False):
+        if non_leaf:
+            boxes = self.octree.boxes[self.octree.non_leaf[..., 0].bool()]
+        else:
+            boxes = self.octree.boxes
+
+        box_min, box_size = torch.split(boxes, [3, 3], -1)
         x_mask = torch.tensor([1, 0, 0.], device=box_min.device)
         y_mask = torch.tensor([0, 1, 0.], device=box_min.device)
         z_mask = torch.tensor([0, 0, 1.], device=box_min.device)
@@ -80,14 +85,20 @@ class Scene:
             mask = mask.sum(1)
             return mask > 0
 
-        self.vis_boxes()
+        points = [
+            [0.45, 0.45, 0.45],
+            [0.6, 0.6, 0.4]
+        ]
+        self.octree.build(div_fn, opt.max_depth, opt.min_depth)
+
+        self.vis_boxes(non_leaf=True)
         while True:
             if opt.add:
                 points += [opt.p]
                 new_octree = Octree(self.octree.boxes[0][:3], self.octree.boxes[0][3:])
                 new_octree.build(div_fn, opt.max_depth, opt.min_depth)
                 self.octree = new_octree
-                self.vis_boxes()
+                self.vis_boxes(non_leaf=True)
 
                 rays_o = torch.tensor([
                     [0.9, 0.9, 0.9],
