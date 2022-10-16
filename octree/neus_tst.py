@@ -157,6 +157,10 @@ def render_sdf_octree():
     def sdf(x):
         return nerf(x)[..., 0]
 
+    def color(x):
+        nerf(x)[..., 1:]
+        return nerf.color(x, dirs, )
+
     with torch.no_grad():
         osdf = OctreeSDF(sdf, [[-1.5] * 3, [1.5] * 3])
 
