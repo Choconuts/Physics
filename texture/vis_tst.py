@@ -48,6 +48,7 @@ class Scene:
             if opt.changed:
                 self.ntm.multiplier = opt.m
                 pnts, norms = self.ntm.load_vertices_and_normals()
+                pnts = cv2.imread("dev/tmp.png") / 255
                 visualize_field(pnts.reshape([-1, 3]), scalars=norms.reshape([-1, 3]))
 
             if opt.add:
@@ -62,10 +63,10 @@ if __name__ == '__main__':
     scene = Scene()
     scene.show_points()
 
-    ntm = NeuSTextureModel("cache/lego_quad.ply", [-1.5, 1.5])
-    mesh = ntm.mesh
-    assert isinstance(mesh, trimesh.Trimesh)
-
-    uvw = np.concatenate([mesh.visual.uv, np.zeros_like(mesh.visual.uv[..., :1])], -1)
-    mesh.vertices = uvw
-    mesh.export("cache/lego_quad_uv.obj")
+    # ntm = NeuSTextureModel("cache/lego_quad.ply", [-1.5, 1.5])
+    # mesh = ntm.mesh
+    # assert isinstance(mesh, trimesh.Trimesh)
+    #
+    # uvw = np.concatenate([mesh.visual.uv, np.zeros_like(mesh.visual.uv[..., :1])], -1)
+    # mesh.vertices = uvw
+    # mesh.export("cache/lego_quad_uv.obj")

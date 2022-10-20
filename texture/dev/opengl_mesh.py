@@ -1,5 +1,7 @@
+import cv2
 import numpy as np
 import trimesh
+from PIL import Image
 from OpenGL.GL import *
 import glfw
 from visilab.rasterization.pipeline import MeshFilter, Buffer, Shader
@@ -41,23 +43,29 @@ varr = np.hstack([uvw, pos]).flatten().astype(np.float32)
 face = np.array(mesh.faces).flatten().astype(np.uint32)
 shader = Shader(vs, fs)
 buffer = Buffer()
-frame = FrameBuffer(1024, 1024)
+w, h = glfw.get_window_size(window.window)
+frame = FrameBuffer(w, h)
 buffer.layout(shader, position=3, color=3)
 
 while not glfw.window_should_close(window.window):
-    w, h = glfw.get_window_size(window.window)
     frame.bind()
     buffer.bind()
-
     glViewport(0, 0, w, h)
     glClearColor(1.0, 0.5, 0.5, 1.0)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     shader.use()
     buffer.draw(varr, face)
 
+    data = (GLubyte * (3 * w * h))(0)
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, data)
+    image = np.frombuffer(data, np.uint8, 3 * w * h).reshape([h, w, 3])
+    # image = np.flip(image, -1)
+    image = np.flip(image, 0)
+
     glfw.poll_events()
     glfw.swap_buffers(window.window)
 
+cv2.imwrite("tmp.png", image)
 shader.release()
 buffer.release()
 glfw.terminate()
