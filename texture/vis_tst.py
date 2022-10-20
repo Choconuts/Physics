@@ -1,8 +1,6 @@
 import imgui
-import numpy as np
-import trimesh
 import imageio
-from texture_model import *
+from texture.dev.texture_model import *
 from interface import visualize_field, ui, Inputable
 
 

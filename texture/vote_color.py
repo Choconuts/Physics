@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from texture.texture_model import NeuSTextureModel, NeuSTextureRenderer, erode_image
+from texture.dev.texture_model import NeuSTextureModel, NeuSTextureRenderer, erode_image
 from cluster.match import FocusSampler, SynDataset
 
 

@@ -137,13 +137,14 @@ def init_glfw(w, h, debug_name=None):
 
 class Rasterizor:
 
-    def __init__(self, w, h, vs, fs):
+    def __init__(self, w, h, vs, fs, clear=(0, 0, 0,)):
         self.w = w
         self.h = h
         self.window = init_glfw(w, h)
         self.shader = Shader(vs, fs)
         self.buffer = Buffer()
         self.frame = FrameBuffer(w, h)
+        self.clear = clear
 
     def layout(self, **kwargs):
         self.buffer.layout(self.shader, **kwargs)
@@ -153,7 +154,7 @@ class Rasterizor:
         self.buffer.bind()
         glEnable(GL_DEPTH_TEST)
         glViewport(0, 0, self.w, self.h)
-        glClearColor(1.0, 0.5, 0.5, 1.0)
+        glClearColor(*self.clear, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         self.shader.use()
         self.buffer.draw(v_arr, idx)
@@ -161,7 +162,6 @@ class Rasterizor:
         data = (GLfloat * (4 * self.w * self.h))(0)
         glReadPixels(0, 0, self.w, self.h, GL_RGBA, GL_FLOAT, data)
         image = np.frombuffer(data, np.float32, 4 * self.w * self.h).reshape([self.h, self.w, 4])
-        # image = np.flip(image, -1)
         return np.flip(image, 0)
 
     def release(self):
