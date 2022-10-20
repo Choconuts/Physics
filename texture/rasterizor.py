@@ -1,7 +1,7 @@
 import os
-import imageio
 import numpy as np
 import trimesh
+import imageio
 import glfw
 from OpenGL.GL import *
 from OpenGL.GL.shaders import compileShader, compileProgram
