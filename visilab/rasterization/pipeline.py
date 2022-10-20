@@ -26,12 +26,17 @@ class Shader:
         vert_shader = load_shader(vs_or_path) if os.path.exists(vs_or_path) else vs_or_path
         frag_shader = load_shader(fs_or_path) if os.path.exists(fs_or_path) else fs_or_path
 
-        self.program = compileProgram(compileShader(vert_shader, GL_VERTEX_SHADER),
-                                      compileShader(frag_shader, GL_FRAGMENT_SHADER))
+        self.vs = compileShader(vert_shader, GL_VERTEX_SHADER)
+        self.fs = compileShader(frag_shader, GL_FRAGMENT_SHADER)
+        self.program = compileProgram(self.vs, self.fs)
         self.use()
 
     def use(self):
         glUseProgram(self.program)
+
+    def release(self):
+        glDeleteShader(self.vs)
+        glDeleteShader(self.fs)
 
 
 class Buffer:
@@ -76,6 +81,12 @@ class Buffer:
             glVertexAttribPointer(loc, size, GL_FLOAT, GL_FALSE, tot_size * 4, ctypes.c_void_p(offset))
             glEnableVertexAttribArray(loc)
             offset += size * 4
+
+    def release(self):
+        self.bind()
+        glDeleteVertexArrays(1, GL_VERTEX_ARRAY)
+        glDeleteBuffers(1, GL_ARRAY_BUFFER)
+        glDeleteBuffers(1, GL_ELEMENT_ARRAY_BUFFER)
 
 
 class MeshFilter:

@@ -10,7 +10,7 @@ from PIL import Image
 import cv2
 from torch import nn
 from cluster.match import ImplicitNetworkMy
-from texture_maker import render_texture
+from texture_maker import render_texture, gen_uv_map
 
 import pyglet
 
@@ -101,22 +101,38 @@ def render_mesh_texture(mesh, material_fn, out_path, resolution=1024, uv=None):
 
 class NeuSTextureModel(nn.Module):
 
-    def __init__(self, cache_dir, bounding_box):
+    def __init__(self, mesh_path, bounding_box, resolution=1024):
         super(NeuSTextureModel, self).__init__()
+        cache_dir = ".".join(os.path.basename(mesh_path).split(".")[:-1]) + ".cache"
+        cache_dir = os.path.join(os.path.dirname(mesh_path), cache_dir)
+        if os.path.exists(cache_dir):
+            print("[Use Cache]", cache_dir)
+        else:
+            os.makedirs(cache_dir)
+            print("[Make Cache]", cache_dir)
         self.cache_dir = cache_dir
-        filenames = glob.glob(cache_dir + "/*.obj")
-        filenames = sorted(filenames, key=os.path.getctime)
-        self.mesh = trimesh.load(filenames[-1])
+        self.mesh = trimesh.load(mesh_path)
+        if not hasattr(self.mesh.visual, "uv"):
+            out_path = ".".join(mesh_path.split(".")[:-1]) + ".obj"
+            assert out_path != mesh_path
+            if not os.path.exists(out_path):
+                print("[Parameterize] generate uv map")
+                gen_uv_map(mesh_path, out_path)
+            self.mesh = trimesh.load(out_path)
         self.uv = np.array(self.mesh.visual.uv)
-        self.resolution = 1024
+        self.resolution = resolution
         box_min, box_max = bounding_box
         self.box_min = np.array(box_min)
         self.box_size = np.array(box_max) - self.box_min
 
-        if not os.path.exists(self.get_cache_path("vertices.v1")):
+        if not os.path.exists(self.get_cache_path("vertices.v0")):
+            print("[Cache] generate vertices and normals")
             self.save_vertices_and_normals()
         if not os.path.exists(self.get_cache_path("mask")):
+            print("[Cache] generate mask map")
             self.save_mask()
+
+        self.multiplier = 1.5
 
     def save_mask(self):
         x = np.array(self.mesh.vertices)
@@ -143,18 +159,19 @@ class NeuSTextureModel(nn.Module):
         return vert, norm
 
     def save_float(self, tag, arr):
-        v1, v2 = split_float(arr)
-        self.save_uint8(tag + ".v1", v1)
-        self.save_uint8(tag + ".v2", v2)
+        vs = split_float(arr)
+        for i, vi in enumerate(vs):
+            self.save_uint8(tag + f".v{i}", vi)
         # print(v1[v1 < 255].min(), "~", v1[v1 < 255].max())
 
     def load_float(self, tag):
-        v1 = self.load_uint8(tag + ".v1")
-        v2 = self.load_uint8(tag + ".v2")
-        v1[v1 < 255] = v1[v1 < 255] * 1.5
-        v2[v2 < 255] = v2[v2 < 255] * 1.5
-        # print(v1[v1 < 255].min(), "~", v1[v1 < 255].max())
-        return join_float(v1, v2)
+        vs = []
+        for i in range(4):
+            vi = self.load_uint8(tag + f".v{i}")
+            vi[vi < 255] = vi[vi < 255] * self.multiplier
+            vi[vi >= 255] = 0
+            vs.append(vi)
+        return join_float(*vs)
 
     def save_uint8(self, tag, arr, offset=0.001):
 
@@ -174,7 +191,7 @@ class NeuSTextureModel(nn.Module):
         erode_image(self.get_cache_path(tag), kernel_size)
 
     def get_cache_path(self, tag):
-        return os.path.join(self.cache_dir, f"{tag}.png")
+        return os.path.join(self.cache_dir, f"{tag}x{self.resolution}.png")
 
 
 def tst_ntr():
@@ -188,27 +205,45 @@ def tst_ntr():
     # erode_image("neus.png")
 
 
-def split_float(v):
+def split_float_step(v, factor=2):
+    Q = 256 // factor
+    assert Q * factor == 256
     assert v.min() >= 0 and v.max() < 1
-    vq = np.floor(v * 128)                      # 0~127 (int)
-    vf = v * 128 - vq                           # 0~1
-    v1 = (vq * 2 + 1).astype(np.uint8)          # 0~255 (odd)
-    v2 = (vf * 256).astype(np.uint8)            # 0~255
-    return v1, v2
+    vq = np.floor(v * Q)                        # 0~127 (int)
+    vf = v * Q - vq                             # 0~1
+    v1 = (vq * factor + factor // 2).astype(np.uint8)     # 0~255 (odd)
+    return v1, vf
 
 
-def join_float(v1, v2):
+def join_float_step(v1, vf, factor=2):
+    Q = 256 // factor
+    assert Q * factor == 256
     assert v1.min() >= 0 and v1.max() < 256
-    assert v2.min() >= 0 and v2.max() < 256
-    vq = v1 // 2                                # 0~127 (int)
-    vf = v2 / 256                               # 0~1
-    return (vq + vf) / 128.0
+    assert vf.min() >= 0 and vf.max() < 1
+    vq = v1 // factor                           # 0~127 (int)
+    return (vq + vf) / Q
+
+
+def split_float(v):
+    v1, v = split_float_step(v, 8)
+    v2, v = split_float_step(v, 8)
+    v3, v = split_float_step(v, 8)
+    v4 = (v * 256).astype(np.uint8)            # 0~255
+    return v1, v2, v3, v4
+
+
+def join_float(v1, v2, v3, v4):
+    v = v4 / 256.0
+    v = join_float_step(v3, v, 8)
+    v = join_float_step(v2, v, 8)
+    v = join_float_step(v1, v, 8)
+    return v
 
 
 def tst_split_and_join():
     v = np.random.rand(10000, 3)
-    v1, v2 = split_float(v)
-    v_ = join_float(v1, v2)
+    vs = split_float(v)
+    v_ = join_float(*vs)
     print(np.abs(v - v_).mean())
 
 
@@ -222,7 +257,7 @@ if __name__ == '__main__':
     # print(arr2 - arr3)
     # print(np.abs(arr2 - arr3).sum())
 
-    ntm = NeuSTextureModel("cache", [-1.5, 1.5])
+    ntm = NeuSTextureModel("cache/lego_quad.ply", [-1.5, 1.5])
     # arr = (np.array(ntm.mesh.vertices) + 1.5) / 6
     # ntm.save_float("tst", arr)
     # arr2 = ntm.load_float("tst")
@@ -232,6 +267,21 @@ if __name__ == '__main__':
     # print(np.abs(arr2 - arr3).sum())
 
     # ntm.erode("tst.v1")
+    tst_split_and_join()
+
+    # ones = np.ones_like(ntm.mesh.vertices)
+    # ones[:1000, 0] = 0.11
+    # ones[:1000, 1] = 0.21
+    # ones[:1000, 2] = 0.31
+    # ones[1000:-5000, 0] = 0.25
+    # ones[1000:-5000, 1] = 0.55
+    # ones[1000:-5000, 2] = 0.75
+    # ones[-5000:, 0] = 0.89
+    # ones[-5000:, 1] = 0.63
+    # ones[-5000:, 2] = 0.42
+    # ntm.save_float("tst", ones)
+    # res = ntm.load_float("tst")
+    # print(res)
 
 
 
