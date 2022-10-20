@@ -1,7 +1,7 @@
 import imgui
 import numpy as np
 import trimesh
-
+import imageio
 from texture_model import *
 from interface import visualize_field, ui, Inputable
 
@@ -48,7 +48,7 @@ class Scene:
             if opt.changed:
                 self.ntm.multiplier = opt.m
                 pnts, norms = self.ntm.load_vertices_and_normals()
-                pnts = cv2.imread("dev/tmp.png") / 255
+                pnts = imageio.imread("tmp.exr")[..., :3]
                 visualize_field(pnts.reshape([-1, 3]), scalars=norms.reshape([-1, 3]))
 
             if opt.add:
